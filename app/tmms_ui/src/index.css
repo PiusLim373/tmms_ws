@@ -1,0 +1,118 @@
+@import "tailwindcss";
+
+@theme {
+  --font-mono: 'Inter Variable', ui-monospace, Consolas, monospace;
+  --font-sans: 'Inter', system-ui, sans-serif;
+}
+
+/* Dark mode (default) */
+:root {
+  --bg:            #0D0812;
+  --panel-bg:      #150D20;
+  --border:        #2D1F42;
+  --accent:        #553480;
+  --accent-bright: #7C3AED;
+  --accent-blue:   #4e88c9;
+  --text:          #9CA3AF;
+  --text-h:        #E5E7EB;
+  --text-dim:      #6B7280;
+  color-scheme: dark;
+}
+
+/* Light mode — toggled via .light class on <html> */
+:root.light {
+  --bg:            #FFFFFF;
+  --panel-bg:      #F5F0FC;
+  --border:        #DDD0ED;
+  --accent:        #553480;
+  --accent-bright: #6D28D9;
+  --accent-blue:   #4e88c9;
+  --text:          #4B3D66;
+  --text-h:        #1A0A2E;
+  --text-dim:      #8B7EA0;
+  color-scheme: light;
+}
+
+:root {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background: var(--bg);
+  }
+  #root {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+  }
+}
+
+@keyframes flash-warn {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.2; }
+}
+.flash-warn {
+  animation: flash-warn 0.6s ease-in-out infinite;
+}
+
+@layer components {
+  .panel {
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+  }
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 10px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .val-mono {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-h);
+    font-variant-numeric: tabular-nums;
+  }
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    cursor: pointer;
+    background: transparent;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+  }
+  .btn-icon:hover {
+    border-color: var(--accent-bright);
+    color: var(--text-h);
+  }
+  .btn-icon:active {
+    background: var(--accent);
+  }
+  .btn-icon:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+}

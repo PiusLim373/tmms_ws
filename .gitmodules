@@ -1,0 +1,8 @@
+[submodule "src/utils/cyclonedds_ws/src/cyclonedds"]
+	path = src/utils/cyclonedds_ws/src/cyclonedds
+	url = https://github.com/eclipse-cyclonedds/cyclonedds
+	branch = releases/0.10.x
+[submodule "src/utils/cyclonedds_ws/src/rmw_cyclonedds"]
+	path = src/utils/cyclonedds_ws/src/rmw_cyclonedds
+	url = https://github.com/ros2/rmw_cyclonedds
+	branch = jazzy
