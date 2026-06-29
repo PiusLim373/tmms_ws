@@ -1,7 +1,8 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess
+from launch.actions import ExecuteProcess, IncludeLaunchDescription
+from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
@@ -50,4 +51,11 @@ def generate_launch_description():
             executable='quadruped_controller_node',
             name='quadruped_controller',
             output='screen'),
+
+        # Rosbridge WebSocket server (exposes ROS2 topics over ws://)
+        IncludeLaunchDescription(
+            AnyLaunchDescriptionSource([
+                get_package_share_directory('rosbridge_server'),
+                '/launch/rosbridge_websocket_launch.xml',
+            ])),
     ])
