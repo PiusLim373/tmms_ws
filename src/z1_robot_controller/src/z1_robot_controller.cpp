@@ -45,7 +45,11 @@ void Z1RobotController::joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg)
 {
   std::lock_guard<std::mutex> lock(joy_mutex_);
   spacenav_joy_ = *msg;
-  last_spacenav_time_ = this->now();
+  bool has_activity = false;
+  for (auto v : msg->axes)    if (std::abs(v) > 0.001) { has_activity = true; break; }
+  if (!has_activity)
+    for (auto b : msg->buttons) if (b) { has_activity = true; break; }
+  if (has_activity) last_spacenav_time_ = this->now();
 }
 
 void Z1RobotController::joyUiCallback(const sensor_msgs::msg::Joy::SharedPtr msg)
@@ -61,7 +65,7 @@ void Z1RobotController::armTimerCallback()
 
   {
     std::lock_guard<std::mutex> lock(joy_mutex_);
-    bool spacenav_active = (this->now() - last_spacenav_time_).seconds() < 0.5;
+    bool spacenav_active = (this->now() - last_spacenav_time_).seconds() < 2.0;
     const auto & joy = spacenav_active ? spacenav_joy_ : ui_joy_;
 
     if (joy.axes.size() >= 6) {
@@ -75,14 +79,14 @@ void Z1RobotController::armTimerCallback()
 
     bool btn0 = joy.buttons.size() > 0 && joy.buttons[0] == 1;
     bool btn1 = joy.buttons.size() > 1 && joy.buttons[1] == 1;
-    if (btn0 && btn1 && gripper_ < 0.0) {
-      gripper_ += 0.01;
+    if (btn0 && !btn1 && gripper_ < 0.0) {
+      gripper_ += 0.01;    // btn0 alone → close (toward 0.0)
       gripper_vel_ = 0.1;
-    } else if ((btn0 != btn1) && gripper_ > -1.0) {
-      gripper_ -= 0.01;
+    } else if (!btn0 && btn1 && gripper_ > -1.0) {
+      gripper_ -= 0.01;    // btn1 alone → open (toward -1.0)
       gripper_vel_ = 0.1;
     } else {
-      gripper_vel_ = 0.0;
+      gripper_vel_ = 0.0;  // both, neither → stop
     }
     gripper_local = gripper_;
     gripper_vel_local = gripper_vel_;
@@ -134,6 +138,10 @@ void Z1RobotController::armPresetCallback(
     arm_.labelRun("down");
     arm_.startTrack(UNITREE_ARM::ArmFSMState::CARTESIAN);
     RCLCPP_INFO(get_logger(), "Going to down position");
+  } else if (label == "test") {
+    arm_.labelRun("test");
+    arm_.startTrack(UNITREE_ARM::ArmFSMState::CARTESIAN);
+    RCLCPP_INFO(get_logger(), "Going to test position");
   } else {
     pause_arm_ = false;
     res->success = false;

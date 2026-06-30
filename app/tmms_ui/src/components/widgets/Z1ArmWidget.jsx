@@ -15,7 +15,7 @@ const PRESETS = [
 ]
 
 // ROS convention: +x = forward (W/S), +y = left (A/D)
-// JoystickDisplay x prop = tx/rx (forward/back), y prop = ty/ry (left/right)
+// JoystickDisplay x prop = forward/back (up/down on screen), y prop = left/right
 const TRANS_HINTS = { up: 'W', down: 'S', left: 'A', right: 'D' }
 const ROT_HINTS   = { up: '⇧W', down: '⇧S', left: '⇧A', right: '⇧D' }
 
@@ -36,7 +36,28 @@ export function Z1ArmWidget({ heldKeys }) {
   const speed = SPEED_MAP[speedLevel]
 
   const wasPublishingRef = useRef(false)
-  const { active: spacenavActive, lastMsg: spacenavMsg } = useTopicActivity('/spacenav/joy', 'sensor_msgs/Joy', 500)
+  const { lastMsg: spacenavMsg } = useTopicActivity('/spacenav/joy', 'sensor_msgs/Joy', 500)
+  const lastNonZeroRef = useRef(0)
+  const [spacenavActive, setSpacenavActive] = useState(false)
+
+  // Update lastNonZeroRef only when msg has actual movement/button input (not idle zeros)
+  useEffect(() => {
+    if (!spacenavMsg?.axes) return
+    const hasActivity =
+      spacenavMsg.axes.some(v => Math.abs(v) > 0.001) ||
+      (spacenavMsg.buttons ?? []).some(b => b !== 0)
+    if (hasActivity) lastNonZeroRef.current = Date.now()
+  }, [spacenavMsg])
+
+  // 200ms poll — 2s grace period mirrors backend logic
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const isActive = lastNonZeroRef.current > 0 &&
+                       (Date.now() - lastNonZeroRef.current) < 2000
+      setSpacenavActive(prev => prev !== isActive ? isActive : prev)
+    }, 200)
+    return () => clearInterval(interval)
+  }, [])
 
   // Lock speed to HIGH when SpaceNav takes over
   useEffect(() => {
@@ -61,21 +82,21 @@ export function Z1ArmWidget({ heldKeys }) {
       if (heldKeys.has('KeyE')) tz += speed
       if (heldKeys.has('KeyQ')) tz -= speed
     } else {
-      if (heldKeys.has('KeyW')) rx += speed
-      if (heldKeys.has('KeyS')) rx -= speed
-      if (heldKeys.has('KeyA')) ry += speed
-      if (heldKeys.has('KeyD')) ry -= speed
+      if (heldKeys.has('KeyW')) ry += speed
+      if (heldKeys.has('KeyS')) ry -= speed
+      if (heldKeys.has('KeyA')) rx -= speed
+      if (heldKeys.has('KeyD')) rx += speed
       if (heldKeys.has('KeyE')) rz += speed
       if (heldKeys.has('KeyQ')) rz -= speed
     }
 
     let btn0 = 0, btn1 = 0
-    if (heldKeys.has('KeyZ'))      { btn0 = 1; btn1 = 1 }
-    else if (heldKeys.has('KeyX')) { btn0 = 1; btn1 = 0 }
+    if (heldKeys.has('KeyX'))      { btn0 = 0; btn1 = 1 }
+    else if (heldKeys.has('KeyZ')) { btn0 = 1; btn1 = 0 }
 
     const axes    = [tx, ty, tz, rx, ry, rz]
     const buttons = [btn0, btn1]
-    const isPublishing = axes.some((v) => v !== 0) || btn0 !== 0
+    const isPublishing = axes.some((v) => v !== 0) || btn0 !== 0 || btn1 !== 0
 
     if (isPublishing || wasPublishingRef.current) {
       publishZ1JoyUi(axes, buttons)
@@ -83,7 +104,7 @@ export function Z1ArmWidget({ heldKeys }) {
     wasPublishingRef.current = isPublishing
 
     setSixDof({ tx, ty, tz, rx, ry, rz })
-    setGripperState(btn0 === 1 && btn1 === 1 ? 'open' : btn0 === 1 ? 'close' : 'idle')
+    setGripperState(btn1 === 1 ? 'open' : btn0 === 1 ? 'close' : 'idle')
   }, [heldKeys, speedLevel, spacenavActive, speed])
 
   // Reflect spacenav msg in display
@@ -96,7 +117,7 @@ export function Z1ArmWidget({ heldKeys }) {
     })
     const b = spacenavMsg.buttons ?? []
     const b0 = b[0] ?? 0, b1 = b[1] ?? 0
-    setGripperState(b0 === 1 && b1 === 1 ? 'open' : b0 === 1 ? 'close' : 'idle')
+    setGripperState(b1 === 1 ? 'open' : b0 === 1 ? 'close' : 'idle')
   }, [spacenavActive, spacenavMsg])
 
   function callPreset(label) {
@@ -116,8 +137,8 @@ export function Z1ArmWidget({ heldKeys }) {
   }, [])
 
   const handleRotDrag = useCallback((x, y) => {
-    publishZ1JoyUi([0, 0, 0, x, y, 0], [0, 0])
-    setSixDof(prev => ({ ...prev, rx: x, ry: y }))
+    publishZ1JoyUi([0, 0, 0, -y, x, 0], [0, 0])  // drag right (y-) → +rx, drag up (x+) → +ry
+    setSixDof(prev => ({ ...prev, rx: -y, ry: x }))
   }, [])
 
   const handleTzDrag = useCallback((v) => {
@@ -227,7 +248,7 @@ export function Z1ArmWidget({ heldKeys }) {
             >
               <span>WASD → TX/TY  QE → TZ</span>
               <span>⇧+WASDQE → RPY</span>
-              <span>Z = open  X = close</span>
+              <span>X = open  Z = close</span>
             </div>
           )}
 
@@ -261,6 +282,7 @@ export function Z1ArmWidget({ heldKeys }) {
                   value={sixDof.tz}
                   trackLen={200}
                   maxValue={speed}
+                  hints={{ up: 'E', down: 'Q' }}
                   onChange={spacenavActive ? undefined : handleTzDrag}
                 />
               </div>
@@ -271,12 +293,12 @@ export function Z1ArmWidget({ heldKeys }) {
               <span style={GROUP_LABEL_STYLE}>ROTATION</span>
               <div className="flex items-end gap-2">
                 <JoystickDisplay
-                  x={sixDof.rx}
-                  y={sixDof.ry}
+                  x={sixDof.ry}
+                  y={-sixDof.rx}
                   hints={ROT_HINTS}
                   size={200}
-                  xLabel="rx"
-                  yLabel="ry"
+                  xLabel="ry"
+                  yLabel="rx"
                   maxValue={speed}
                   onChange={spacenavActive ? undefined : handleRotDrag}
                 />
@@ -285,6 +307,7 @@ export function Z1ArmWidget({ heldKeys }) {
                   value={sixDof.rz}
                   trackLen={200}
                   maxValue={speed}
+                  hints={{ up: '⇧E', down: '⇧Q' }}
                   onChange={spacenavActive ? undefined : handleRzDrag}
                 />
               </div>
@@ -297,42 +320,10 @@ export function Z1ArmWidget({ heldKeys }) {
             style={{ padding: '8px 16px 12px' }}
           >
             <button
-              onClick={() => { publishZ1JoyUi([0,0,0,0,0,0], [1,1]) }}
-              style={{
-                flex: 1,
-                maxWidth: 160,
-                padding: '10px 0',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 13,
-                letterSpacing: '0.08em',
-                borderRadius: 4,
-                border: gripperState === 'open'
-                  ? '1px solid #16A34A'
-                  : '1px solid var(--border)',
-                background: gripperState === 'open' ? '#15803D' : 'transparent',
-                color: gripperState === 'open' ? '#ffffff' : 'var(--text-dim)',
-                cursor: 'pointer',
-                transition: 'all 0.1s',
-              }}
-              onMouseEnter={(e) => {
-                if (gripperState !== 'open') {
-                  e.currentTarget.style.borderColor = '#16A34A'
-                  e.currentTarget.style.color = '#4ADE80'
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (gripperState !== 'open') {
-                  e.currentTarget.style.borderColor = 'var(--border)'
-                  e.currentTarget.style.color = 'var(--text-dim)'
-                }
-              }}
-            >
-              OPEN
-              <span style={{ fontSize: 9, opacity: 0.6, marginLeft: 6 }}>Z</span>
-            </button>
-
-            <button
-              onClick={() => { publishZ1JoyUi([0,0,0,0,0,0], [1,0]) }}
+              disabled={spacenavActive}
+              onPointerDown={() => { publishZ1JoyUi([0,0,0,0,0,0], [1,0]); setGripperState('close') }}
+              onPointerUp={()   => { publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle') }}
+              onPointerLeave={() => { publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle') }}
               style={{
                 flex: 1,
                 maxWidth: 160,
@@ -342,20 +333,22 @@ export function Z1ArmWidget({ heldKeys }) {
                 letterSpacing: '0.08em',
                 borderRadius: 4,
                 border: gripperState === 'close'
-                  ? '1px solid var(--accent-blue)'
+                  ? '1px solid var(--accent-bright)'
                   : '1px solid var(--border)',
-                background: gripperState === 'close' ? '#1E4D7B' : 'transparent',
-                color: gripperState === 'close' ? '#ffffff' : 'var(--text-dim)',
-                cursor: 'pointer',
+                background: gripperState === 'close' ? 'var(--accent)' : 'transparent',
+                color: gripperState === 'close' ? 'var(--text-h)' : 'var(--text-dim)',
+                cursor: spacenavActive ? 'not-allowed' : 'pointer',
+                opacity: spacenavActive ? 0.35 : 1,
+                pointerEvents: spacenavActive ? 'none' : 'auto',
                 transition: 'all 0.1s',
               }}
-              onMouseEnter={(e) => {
+              onMouseEnter={spacenavActive ? undefined : (e) => {
                 if (gripperState !== 'close') {
-                  e.currentTarget.style.borderColor = 'var(--accent-blue)'
-                  e.currentTarget.style.color = 'var(--accent-blue)'
+                  e.currentTarget.style.borderColor = 'var(--accent-bright)'
+                  e.currentTarget.style.color = 'var(--text-h)'
                 }
               }}
-              onMouseLeave={(e) => {
+              onMouseLeave={spacenavActive ? undefined : (e) => {
                 if (gripperState !== 'close') {
                   e.currentTarget.style.borderColor = 'var(--border)'
                   e.currentTarget.style.color = 'var(--text-dim)'
@@ -363,6 +356,46 @@ export function Z1ArmWidget({ heldKeys }) {
               }}
             >
               CLOSE
+              <span style={{ fontSize: 9, opacity: 0.6, marginLeft: 6 }}>Z</span>
+            </button>
+
+            <button
+              disabled={spacenavActive}
+              onPointerDown={() => { publishZ1JoyUi([0,0,0,0,0,0], [0,1]); setGripperState('open') }}
+              onPointerUp={()   => { publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle') }}
+              onPointerLeave={() => { publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle') }}
+              style={{
+                flex: 1,
+                maxWidth: 160,
+                padding: '10px 0',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 13,
+                letterSpacing: '0.08em',
+                borderRadius: 4,
+                border: gripperState === 'open'
+                  ? '1px solid var(--accent-bright)'
+                  : '1px solid var(--border)',
+                background: gripperState === 'open' ? 'var(--accent)' : 'transparent',
+                color: gripperState === 'open' ? 'var(--text-h)' : 'var(--text-dim)',
+                cursor: spacenavActive ? 'not-allowed' : 'pointer',
+                opacity: spacenavActive ? 0.35 : 1,
+                pointerEvents: spacenavActive ? 'none' : 'auto',
+                transition: 'all 0.1s',
+              }}
+              onMouseEnter={spacenavActive ? undefined : (e) => {
+                if (gripperState !== 'open') {
+                  e.currentTarget.style.borderColor = 'var(--accent-bright)'
+                  e.currentTarget.style.color = 'var(--text-h)'
+                }
+              }}
+              onMouseLeave={spacenavActive ? undefined : (e) => {
+                if (gripperState !== 'open') {
+                  e.currentTarget.style.borderColor = 'var(--border)'
+                  e.currentTarget.style.color = 'var(--text-dim)'
+                }
+              }}
+            >
+              OPEN
               <span style={{ fontSize: 9, opacity: 0.6, marginLeft: 6 }}>X</span>
             </button>
           </div>

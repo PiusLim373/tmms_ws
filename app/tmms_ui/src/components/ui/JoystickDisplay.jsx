@@ -161,7 +161,7 @@ export function JoystickDisplay({ x = 0, y = 0, label = '', hints, size = 160, m
 // Springs to 0 on pointer release.
 // maxValue: clamps output and scales display (default 1.0)
 // trackLen: length of the track in px (default 80); match to paired joystick size
-export function AxisKnob({ label, value = 0, onChange, orientation = 'v', maxValue = 1, trackLen = 80 }) {
+export function AxisKnob({ label, value = 0, onChange, orientation = 'v', maxValue = 1, trackLen = 80, hints }) {
   const isV        = orientation === 'v'
   const trackCross = 10
   const knobR      = 10
@@ -270,6 +270,21 @@ export function AxisKnob({ label, value = 0, onChange, orientation = 'v', maxVal
         {/* Fill bar from center to knob */}
         {isActive && (
           <rect {...fillProps} fill="var(--accent)" />
+        )}
+        {/* Key hints — at ±50% travel so they stay visible most of the time */}
+        {hints && isV && (
+          <>
+            <text x={svgW / 2} y={svgH / 2 - travel * 0.5}
+              textAnchor="middle" dominantBaseline="middle"
+              fill="var(--text-dim)" fontSize={9} fontFamily="var(--font-mono)">
+              {hints.up}
+            </text>
+            <text x={svgW / 2} y={svgH / 2 + travel * 0.5}
+              textAnchor="middle" dominantBaseline="middle"
+              fill="var(--text-dim)" fontSize={9} fontFamily="var(--font-mono)">
+              {hints.down}
+            </text>
+          </>
         )}
         {/* Knob */}
         <circle
