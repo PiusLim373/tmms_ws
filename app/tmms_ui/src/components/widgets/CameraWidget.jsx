@@ -145,7 +145,7 @@ export function CameraWidget({ topicName, title, className = '' }) {
       </div>
       <div className="flex items-center justify-center flex-1" style={{ background: '#000', overflow: 'hidden', minHeight: 0 }}>
         {active
-          ? <canvas ref={canvasRef} style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }} />
+          ? <canvas ref={canvasRef} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
           : <NoSignal topicName={topicName} />
         }
       </div>

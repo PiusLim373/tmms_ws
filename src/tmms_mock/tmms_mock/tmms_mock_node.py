@@ -1,10 +1,21 @@
 import math
+import time
 
+import cv2
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from sensor_msgs.msg import Joy
+from sensor_msgs.msg import CompressedImage, Joy
 from std_srvs.srv import SetBool
+
+# Mock camera specs: (width, height)
+_CAMERAS = [
+    ('/topdown_cam/compressed',      780, 1040),
+    ('/third_person_cam/compressed',  640, 480),
+    ('/wrist_cam/compressed',         640, 480),
+]
+_CAM_FPS = 15
 
 
 class TmmsMockNode(Node):
@@ -20,6 +31,12 @@ class TmmsMockNode(Node):
         self._spacenav_joy_pub = self.create_publisher(Joy, '/spacenav/joy', 10)
         self._joy_pub = self.create_publisher(Joy, '/joy', 10)
 
+        # Mock camera publishers
+        self._cam_pubs = [
+            (self.create_publisher(CompressedImage, topic, 10), w, h)
+            for topic, w, h in _CAMERAS
+        ]
+
         # Subscriptions — monitor consolidated pipeline output from real controller nodes
         self.create_subscription(Twist, '/consolidated_z1_cmd_vel', self._z1_cb, 10)
         self.create_subscription(Twist, '/consolidated_quadruped_cmd_vel', self._quad_cb, 10)
@@ -29,8 +46,9 @@ class TmmsMockNode(Node):
         self.create_service(SetBool, 'connect_flight_controller', self._connect_flight_controller)
 
         # Timers
-        self.create_timer(0.01, self._publish_tick)  # 100 Hz
-        self.create_timer(1.0, self._print_status)   # 1 Hz
+        self.create_timer(0.01, self._publish_tick)          # 100 Hz
+        self.create_timer(1.0 / _CAM_FPS, self._cam_tick)   # 15 Hz
+        self.create_timer(1.0, self._print_status)           # 1 Hz
 
         self.get_logger().info('tmms_mock node started')
 
@@ -55,6 +73,20 @@ class TmmsMockNode(Node):
         res.success = True
         res.message = f'Flight controller {state}'
         return res
+
+    def _cam_tick(self):
+        t = time.monotonic()
+        hue = int((t * 30) % 180)
+        stamp = self.get_clock().now().to_msg()
+        for pub, w, h in self._cam_pubs:
+            frame = np.full((h, w, 3), [hue, 200, 180], dtype=np.uint8)
+            frame = cv2.cvtColor(frame, cv2.COLOR_HSV2BGR)
+            _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+            msg = CompressedImage()
+            msg.header.stamp = stamp
+            msg.format = 'jpeg'
+            msg.data = buf.tobytes()
+            pub.publish(msg)
 
     def _publish_tick(self):
         t = self.get_clock().now().nanoseconds * 1e-9

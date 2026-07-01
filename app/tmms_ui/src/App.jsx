@@ -18,9 +18,9 @@ export default function App() {
   }, [theme])
 
   // Resizable split state — fractions of available area
-  const [camHeightPct, setCamHeightPct] = useState(0.65)
-  const [topdownPct, setTopdownPct]     = useState(0.20)
-  const [wristPct, setWristPct]         = useState(0.22)
+  const [camHeightPct, setCamHeightPct] = useState(0.73)
+  const [topdownPct, setTopdownPct]     = useState(0.295)
+  const [wristPct, setWristPct]         = useState(0.20)
 
   const mainRef   = useRef()  // area between header and footer
   const camRowRef = useRef()  // camera row container
