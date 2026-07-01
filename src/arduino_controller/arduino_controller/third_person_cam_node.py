@@ -2,15 +2,15 @@ import time
 import serial
 import rclpy
 from rclpy.node import Node
-from tmms_msgs.srv import StringTrigger
+from std_msgs.msg import String
 
 CMD_MAP = {
     'pitch+': b'w',
     'pitch-': b's',
-    'yaw+':   b'd',
-    'yaw-':   b'a',
-    'z+':     b'f',
-    'z-':     b'r',
+    'yaw+':   b'a',
+    'yaw-':   b'd',
+    'z+':     b'r',
+    'z-':     b'f',
 }
 
 
@@ -19,18 +19,14 @@ class ThirdPersonCamNode(Node):
         super().__init__('third_person_cam_node')
         self.ser = serial.Serial('/dev/ttyUSB0', 9600, timeout=1)
         time.sleep(1)
-        self.create_service(StringTrigger, 'third_person_cam_control', self.callback)
+        self.create_subscription(String, 'third_person_cam_control', self.callback, 10)
 
-    def callback(self, request, response):
-        char = CMD_MAP.get(request.data)
+    def callback(self, msg):
+        char = CMD_MAP.get(msg.data)
         if char is not None:
             self.ser.write(char)
-            response.success = True
-            response.message = ''
         else:
-            response.success = False
-            response.message = f'Unknown command: {request.data}'
-        return response
+            self.get_logger().warn(f"Unknown command: {msg.data}")
 
 
 def main():

@@ -1,4 +1,4 @@
-import { callService } from '../../services/rosbridge'
+import { publishThirdPersonCamControl } from '../../services/rosbridge'
 import { useCameraFeed } from './CameraWidget'
 
 function CamBtn({ cmd, children, title }) {
@@ -9,7 +9,7 @@ function CamBtn({ cmd, children, title }) {
       style={{ fontSize: 11 }}
       onClick={(e) => {
         e.currentTarget.blur()
-        callService('/third_person_cam_control', cmd, null, null)
+        publishThirdPersonCamControl(cmd)
       }}
     >
       {children}
@@ -18,7 +18,7 @@ function CamBtn({ cmd, children, title }) {
 }
 
 export function ThirdPersonWidget() {
-  const { canvasRef, active, fps } = useCameraFeed('/thrid_person_cam')
+  const { canvasRef, active, fps } = useCameraFeed('/third_person_cam/compressed')
 
   return (
     <div className="panel flex flex-col h-full" style={{ overflow: 'hidden' }}>

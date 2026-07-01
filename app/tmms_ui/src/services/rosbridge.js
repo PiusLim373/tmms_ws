@@ -26,6 +26,10 @@ export function publishZ1JoyUi(axes, buttons) {
   getPublisher('/z1_joy_ui', 'sensor_msgs/Joy').publish({ axes, buttons })
 }
 
+export function publishThirdPersonCamControl(cmd) {
+  getPublisher('/third_person_cam_control', 'std_msgs/String').publish({ data: cmd })
+}
+
 // Returns cleanup fn: call in useEffect cleanup
 export function subscribe(topicName, messageType, callback) {
   const topic = new Topic({
@@ -41,10 +45,11 @@ export function subscribe(topicName, messageType, callback) {
 
 // Camera topics — bandwidth throttled
 export function subscribeCamera(topicName, callback) {
+  const isCompressed = topicName.endsWith('/compressed')
   const topic = new Topic({
     ros,
     name: topicName,
-    messageType: 'sensor_msgs/Image',
+    messageType: isCompressed ? 'sensor_msgs/CompressedImage' : 'sensor_msgs/Image',
     throttle_rate: 50,   // max ~20 fps from server side
     queue_length: 1,
   })

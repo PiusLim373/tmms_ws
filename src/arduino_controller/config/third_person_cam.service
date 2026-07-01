@@ -1,0 +1,17 @@
+[Unit]
+Description=Third Person Cam Arduino Controller
+After=network.target
+
+[Service]
+User=unitree
+ExecStart=/bin/bash -c '\
+  source /opt/ros/foxy/setup.bash && \
+  source /home/unitree/slam_config/cyclone_go2_B2_ws/install/setup.bash && \
+  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && \
+  export CYCLONEDDS_URI=/home/unitree/slam_config/cyclone_go2_B2_ws/cyclonedds.xml && \
+  python3 /home/unitree/tmms_ws/third_person_cam_node.py'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

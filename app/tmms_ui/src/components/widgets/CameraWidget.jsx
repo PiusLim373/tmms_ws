@@ -1,6 +1,21 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { subscribeCamera } from '../../services/rosbridge'
 
+function decodeCompressedImage(msg, canvas) {
+  const { data: b64, format } = msg
+  if (!b64) return
+  const mimeType = format && format.includes('png') ? 'image/png' : 'image/jpeg'
+  const img = new window.Image()
+  img.onload = () => {
+    if (canvas.width !== img.width || canvas.height !== img.height) {
+      canvas.width = img.width
+      canvas.height = img.height
+    }
+    canvas.getContext('2d').drawImage(img, 0, 0)
+  }
+  img.src = `data:${mimeType};base64,${b64}`
+}
+
 function decodeRosImage(msg, canvas) {
   const { width, height, encoding, data: b64 } = msg
   if (!width || !height || !b64) return
@@ -57,12 +72,13 @@ export function useCameraFeed(topicName) {
   const [active, setActive] = useState(false)
   const [fps, setFps]       = useState(0)
   const frameTimesRef = useRef([])
+  const isCompressed  = topicName.endsWith('/compressed')
 
   const drawPending = useCallback(() => {
     rafRef.current = null
     const msg = pendingRef.current
     if (msg && canvasRef.current) {
-      decodeRosImage(msg, canvasRef.current)
+      isCompressed ? decodeCompressedImage(msg, canvasRef.current) : decodeRosImage(msg, canvasRef.current)
       const now = Date.now()
       frameTimesRef.current.push(now)
       frameTimesRef.current = frameTimesRef.current.filter((t) => now - t < 1000)

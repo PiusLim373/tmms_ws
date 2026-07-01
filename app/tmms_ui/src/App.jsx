@@ -71,7 +71,7 @@ export default function App() {
         >
           {/* TopDown cam */}
           <div style={{ width: `${topdownPct * 100}%`, flexShrink: 0, overflow: 'hidden' }}>
-            <CameraWidget topicName="/topdown_cam" title="TOPDOWN 360°" />
+            <CameraWidget topicName="/topdown_cam/compressed" title="TOPDOWN 360°" />
           </div>
 
           <ResizeHandle
@@ -97,7 +97,7 @@ export default function App() {
 
           {/* Wrist cam */}
           <div style={{ width: `${wristPct * 100}%`, flexShrink: 0, overflow: 'hidden' }}>
-            <CameraWidget topicName="/wrist_cam" title="WRIST CAM" />
+            <CameraWidget topicName="/wrist_cam/compressed" title="WRIST CAM" />
           </div>
         </div>
 
