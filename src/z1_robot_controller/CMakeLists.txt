@@ -26,6 +26,9 @@ ament_target_dependencies(z1_robot_controller_node
   rclcpp geometry_msgs sensor_msgs std_msgs tmms_msgs)
 target_link_libraries(z1_robot_controller_node
   ${CMAKE_CURRENT_SOURCE_DIR}/lib/libZ1_SDK_x86_64.so)
+set_target_properties(z1_robot_controller_node PROPERTIES
+  BUILD_WITH_INSTALL_RPATH TRUE
+  INSTALL_RPATH "$ORIGIN/../../share/${PROJECT_NAME}/lib")
 
 install(TARGETS z1_robot_controller_node
   DESTINATION lib/${PROJECT_NAME})

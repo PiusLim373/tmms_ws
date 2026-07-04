@@ -21,6 +21,13 @@ QuadrupedController::QuadrupedController()
     "lf/sportmodestate", 10,
     std::bind(&QuadrupedController::sportStateCallback, this, std::placeholders::_1));
 
+  low_state_sub_ = create_subscription<unitree_go::msg::LowState>(
+    "lf/lowstate", 10,
+    std::bind(&QuadrupedController::lowStateCallback, this, std::placeholders::_1));
+
+  main_status_pub_ = create_publisher<tmms_msgs::msg::QuadrupedMainStatus>(
+    "quadruped_main_status", 10);
+
   quadruped_cmd_srv_ = create_service<tmms_msgs::srv::StringTrigger>(
     "~/quadruped_cmd",
     std::bind(&QuadrupedController::quadrupedCmdCallback, this,
@@ -28,6 +35,9 @@ QuadrupedController::QuadrupedController()
 
   move_timer_ = create_wall_timer(
     2ms, std::bind(&QuadrupedController::moveTimerCallback, this));
+
+  main_status_timer_ = create_wall_timer(
+    200ms, std::bind(&QuadrupedController::mainStatusTimerCallback, this));
 
   RCLCPP_INFO(get_logger(), "Quadruped Controller node started");
 }
@@ -54,6 +64,52 @@ void QuadrupedController::sportStateCallback(
   const unitree_go::msg::SportModeState::SharedPtr msg)
 {
   mode_ = msg->mode;
+
+  pose_.position.x = msg->position[0];
+  pose_.position.y = msg->position[1];
+  pose_.position.z = msg->position[2];
+
+  // Unitree packs imu_state.quaternion as [w, x, y, z]; geometry_msgs/Quaternion
+  // fields are named x, y, z, w, so map explicitly rather than by array order.
+  pose_.orientation.w = msg->imu_state.quaternion[0];
+  pose_.orientation.x = msg->imu_state.quaternion[1];
+  pose_.orientation.y = msg->imu_state.quaternion[2];
+  pose_.orientation.z = msg->imu_state.quaternion[3];
+}
+
+void QuadrupedController::lowStateCallback(
+  const unitree_go::msg::LowState::SharedPtr msg)
+{
+  battery_soc_ = msg->bms_state.soc;
+}
+
+void QuadrupedController::mainStatusTimerCallback()
+{
+  tmms_msgs::msg::QuadrupedMainStatus status;
+  status.pose = pose_;
+  status.battery_percentage = battery_soc_;
+  status.robot_mode = modeToString(mode_);
+  main_status_pub_->publish(status);
+}
+
+std::string QuadrupedController::modeToString(uint8_t mode) const
+{
+  using Status = tmms_msgs::msg::QuadrupedMainStatus;
+  switch (mode) {
+    case 0: return Status::ROBOT_IDLE;
+    case 1: return Status::BALANCE_STAND;
+    case 2: return Status::POSE;
+    case 3: return Status::LOCOMOTION;
+    case 5: return Status::LIE_DOWN;
+    case 6: return Status::JOINT_LOCK;
+    case 7: return Status::DAMPING;
+    case 8: return Status::RECOVERY_STAND;
+    case 10: return Status::SIT;
+    case 11: return Status::FRONT_FLIP;
+    case 12: return Status::FRONT_JUMP;
+    case 13: return Status::FRONT_POUNCE;
+    default: return "";
+  }
 }
 
 void QuadrupedController::moveTimerCallback()

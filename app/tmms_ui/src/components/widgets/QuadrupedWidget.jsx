@@ -11,12 +11,16 @@ const SPEED_MAP = { LOW: 0.2, MID: 0.4, HIGH: 0.7 }
 
 const MODE_SERVICE_CMD = { 1: 'stand_down', 2: 'stand_up', 3: 'balance_stand' }
 
+// Real robot_mode string (from quadruped_main_status) -> GearShift's numeric mode id
+// "locomotion" is a transitional state seen during *any* mode switch (not just entering
+// walk), so it's deliberately not mapped here — see resolvedMode below.
+const MODE_FROM_STRING = { damping: 1, lie_down: 1, joint_lock: 2, balance_stand: 3 }
+
 // ROS convention: +x = forward, +y = left
 // JoystickDisplay: x prop = forward/back, y prop = left/right
 const JOY_HINTS = { up: '↑', down: '↓', left: '←', right: '→' }
 
 export function QuadrupedWidget({ heldKeys }) {
-  const [gearMode, setGearMode]     = useState(1)
   const [speedLevel, setSpeedLevel] = useState('MID')
   const [modalOpen, setModalOpen]   = useState(false)
   const [pendingMode, setPendingMode] = useState(null)
@@ -25,11 +29,50 @@ export function QuadrupedWidget({ heldKeys }) {
 
   const speed = SPEED_MAP[speedLevel]
 
-  const wasMovingRef  = useRef(false)
-  const gearModeRef   = useRef(gearMode)
-  useEffect(() => { gearModeRef.current = gearMode }, [gearMode])
+  const wasMovingRef = useRef(false)
 
   const { active: joyActive, lastMsg: joyMsg } = useTopicActivity('/joy', 'sensor_msgs/Joy', 500)
+  const { active: statusActive, lastMsg: statusMsg } = useTopicActivity(
+    '/quadruped_main_status', 'tmms_msgs/QuadrupedMainStatus', 1000
+  )
+
+  // Ground truth from the robot, not an optimistic local guess.
+  // "locomotion" carries no new information (it's transitional across any mode
+  // switch), so hold onto the last resolved stage instead of re-mapping it.
+  const [resolvedMode, setResolvedMode] = useState(undefined)
+  useEffect(() => {
+    if (!statusActive) return
+    const raw = statusMsg?.robot_mode
+    if (raw === 'locomotion') return
+    setResolvedMode(MODE_FROM_STRING[raw])
+  }, [statusActive, statusMsg])
+
+  const actualMode = statusActive ? resolvedMode : undefined
+  const modeFault  = statusActive && actualMode === undefined
+  const isWalkMode = actualMode === 3
+
+  const isWalkModeRef = useRef(isWalkMode)
+  useEffect(() => { isWalkModeRef.current = isWalkMode }, [isWalkMode])
+
+  // Tracks the last cmd_vel the UI actually published, so we can tell whether a
+  // zero needs to be sent when walk mode is lost (backend replays the last value
+  // it received indefinitely — it doesn't expire it on its own).
+  const lastCmdRef = useRef({ lx: 0, ly: 0, az: 0 })
+  const sendCmdVel = useCallback((lx, ly, az) => {
+    publishQuadrupedCmdVel(lx, ly, az)
+    lastCmdRef.current = { lx, ly, az }
+  }, [])
+
+  // Safety net: the instant walk mode is lost (known non-walk mode, or unrecognized/undefined),
+  // stop any residual motion instead of leaving the last nonzero command in effect.
+  const wasWalkModeRef = useRef(isWalkMode)
+  useEffect(() => {
+    if (wasWalkModeRef.current && !isWalkMode) {
+      const { lx, ly, az } = lastCmdRef.current
+      if (lx !== 0 || ly !== 0 || az !== 0) sendCmdVel(0, 0, 0)
+    }
+    wasWalkModeRef.current = isWalkMode
+  }, [isWalkMode, sendCmdVel])
 
   // Lock speed to HIGH when gamepad takes over
   useEffect(() => {
@@ -57,46 +100,47 @@ export function QuadrupedWidget({ heldKeys }) {
 
     const isMoving = lx !== 0 || ly !== 0 || az !== 0
 
-    if (gearMode === 3) {
+    if (isWalkMode) {
       if (isMoving || wasMovingRef.current) {
-        publishQuadrupedCmdVel(lx, ly, az)
+        sendCmdVel(lx, ly, az)
       }
     }
     wasMovingRef.current = isMoving
 
-    setJoyDisplay({ x: lx, y: ly, yaw: az })
-  }, [heldKeys, gearMode, speedLevel, joyActive, speed])
+    setJoyDisplay(isWalkMode ? { x: lx, y: ly, yaw: az } : { x: 0, y: 0, yaw: 0 })
+  }, [heldKeys, isWalkMode, speedLevel, joyActive, speed, sendCmdVel])
 
   // Reflect /joy msg in display when gamepad is connected
   useEffect(() => {
     if (!joyActive || !joyMsg?.axes) return
     setJoyDisplay({
-      x:   joyMsg.axes[0] ?? 0,
-      y:   joyMsg.axes[1] ?? 0,
+      x:   joyMsg.axes[1] ?? 0,
+      y:   joyMsg.axes[0] ?? 0,
       yaw: -(joyMsg.axes[5] ?? 0),
     })
   }, [joyActive, joyMsg])
 
   // Drag callbacks — publish directly, independent of keyboard effect
   const handleJoyDrag = useCallback((x, y) => {
-    if (gearModeRef.current === 3) publishQuadrupedCmdVel(x, y, 0)
+    if (isWalkModeRef.current) sendCmdVel(x, y, 0)
     setJoyDisplay(prev => ({ ...prev, x, y }))
-  }, [])
+  }, [sendCmdVel])
 
   const handleYawDrag = useCallback((v) => {
-    if (gearModeRef.current === 3) publishQuadrupedCmdVel(0, 0, v)
+    if (isWalkModeRef.current) sendCmdVel(0, 0, v)
     setJoyDisplay(prev => ({ ...prev, yaw: v }))
-  }, [])
+  }, [sendCmdVel])
 
   function requestModeChange(newMode) {
-    if (Math.abs(newMode - gearMode) !== 1) return
+    // Skip the adjacency check when the current real mode isn't known —
+    // there's nothing safe to validate against, so let the operator try.
+    if (actualMode !== undefined && Math.abs(newMode - actualMode) !== 1) return
     setPendingMode(newMode)
     setModalOpen(true)
   }
 
   function confirmModeChange() {
     const cmd = MODE_SERVICE_CMD[pendingMode]
-    setGearMode(pendingMode)
     setModalOpen(false)
     setServiceStatus({ loading: true, lastResult: null })
     callService(
@@ -114,7 +158,7 @@ export function QuadrupedWidget({ heldKeys }) {
     <>
       <WarningModal
         open={modalOpen}
-        fromMode={gearMode}
+        fromMode={actualMode}
         toMode={pendingMode}
         onConfirm={confirmModeChange}
         onCancel={() => { setModalOpen(false); setPendingMode(null) }}
@@ -137,12 +181,29 @@ export function QuadrupedWidget({ heldKeys }) {
               style={{
                 width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
                 flexShrink: 0,
-                background: joyActive ? 'var(--accent-blue)' : (gearMode === 3 ? '#22C55E' : 'var(--border)'),
+                background: joyActive ? 'var(--accent-blue)' : (isWalkMode ? '#22C55E' : 'var(--border)'),
               }}
-              title={joyActive ? 'Gamepad active' : `Mode ${gearMode}`}
+              title={joyActive ? 'Gamepad active' : (actualMode !== undefined ? `Mode ${actualMode}` : 'Mode unknown')}
             />
           </div>
         </div>
+
+        {(modeFault || !statusActive) && (
+          <div
+            className="flash-warn"
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: 11,
+              color: '#EF4444',
+              padding: '4px 12px',
+              borderBottom: '1px solid var(--border)',
+            }}
+          >
+            {modeFault
+              ? '⚠ UNKNOWN ROBOT MODE — MOVEMENT DISABLED'
+              : '⚠ NO STATUS FEED — MOVEMENT DISABLED'}
+          </div>
+        )}
 
         {/* Main content */}
         <div className="flex flex-1 min-h-0 gap-0">
@@ -154,7 +215,7 @@ export function QuadrupedWidget({ heldKeys }) {
             <div className="flex gap-2" style={{ flex: 1, minHeight: 0, alignItems: 'flex-start' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <GearShift
-                  mode={gearMode}
+                  mode={actualMode}
                   onModeChange={requestModeChange}
                   disabled={serviceStatus.loading || joyActive}
                 />
@@ -177,14 +238,14 @@ export function QuadrupedWidget({ heldKeys }) {
               >
                 <span>↑↓ Forward/Back  ←→ Strafe</span>
                 <span>⇧+←→ Yaw</span>
-                <span style={{ color: gearMode === 3 ? '#22C55E' : '#EF4444', fontSize: 11 }}>
-                  {gearMode === 3 ? '✓ Walk — joystick active' : '✗ Walk mode required'}
+                <span style={{ color: isWalkMode ? '#22C55E' : '#EF4444', fontSize: 11 }}>
+                  {isWalkMode ? '✓ Walk — joystick active' : '✗ Walk mode required'}
                 </span>
               </div>
             )}
 
             {/* Walk mode warning when gamepad active but not in WALK */}
-            {joyActive && gearMode !== 3 && (
+            {joyActive && !isWalkMode && (
               <span
                 className="flash-warn"
                 style={{
@@ -213,7 +274,7 @@ export function QuadrupedWidget({ heldKeys }) {
               hints={JOY_HINTS}
               size={200}
               maxValue={speed}
-              onChange={!joyActive && gearMode === 3 ? handleJoyDrag : undefined}
+              onChange={!joyActive && isWalkMode ? handleJoyDrag : undefined}
             />
 
             <AxisKnob
@@ -222,7 +283,7 @@ export function QuadrupedWidget({ heldKeys }) {
               orientation="v"
               trackLen={200}
               maxValue={speed}
-              onChange={!joyActive && gearMode === 3 ? handleYawDrag : undefined}
+              onChange={!joyActive && isWalkMode ? handleYawDrag : undefined}
             />
           </div>
         </div>

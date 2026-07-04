@@ -1,4 +1,11 @@
 import { useState, useEffect } from 'react'
+import { useTopicActivity } from '../hooks/useTopicActivity'
+
+function batteryColor(pct) {
+  if (pct > 50) return '#22C55E'
+  if (pct > 20) return '#F59E0B'
+  return '#EF4444'
+}
 
 export function Header({ connected, theme, onThemeToggle }) {
   const [time, setTime] = useState(() => new Date())
@@ -7,6 +14,11 @@ export function Header({ connected, theme, onThemeToggle }) {
     const id = setInterval(() => setTime(new Date()), 1000)
     return () => clearInterval(id)
   }, [])
+
+  const { active: statusActive, lastMsg: statusMsg } = useTopicActivity(
+    '/quadruped_main_status', 'tmms_msgs/QuadrupedMainStatus', 1000
+  )
+  const battery = statusActive ? statusMsg?.battery_percentage : undefined
 
   const hh = String(time.getHours()).padStart(2, '0')
   const mm = String(time.getMinutes()).padStart(2, '0')
@@ -83,6 +95,20 @@ export function Header({ connected, theme, onThemeToggle }) {
           }}
         >
           {hh}:{mm}:{ss}
+        </span>
+
+        {/* Battery */}
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 12,
+            color: battery === undefined ? 'var(--text-dim)' : batteryColor(battery),
+            letterSpacing: '0.04em',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+          title={battery === undefined ? 'No quadruped_main_status feed' : `Battery ${battery}%`}
+        >
+          🔋 {battery === undefined ? '--' : `${battery}%`}
         </span>
 
         {/* Light/dark toggle */}
