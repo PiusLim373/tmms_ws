@@ -1,0 +1,17 @@
+services:
+  tmms_build:
+    image: tmms_image:0.1.0
+    platform: linux/arm64
+    container_name: tmms_build
+    # Enable all port forwarding
+    network_mode: host
+    privileged: true
+    # Mount workspace for building and accessing install/
+    # Keep interactive shell for manual builds
+    stdin_open: true
+    tty: true
+    devices:
+      - /dev:/dev
+    volumes:
+      - /home/piuslim373/all_ws/test/tmms_ws:/home/htxgrrt/.htxgrrt/bin/tmms_ws
+      - /home/piuslim373/all_ws/test/z1_controller:/home/htxgrrt/.htxgrrt/bin/z1_controller

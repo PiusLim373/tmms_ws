@@ -24,8 +24,17 @@ target_include_directories(z1_robot_controller_node PUBLIC
 target_compile_features(z1_robot_controller_node PUBLIC c_std_99 cxx_std_17)
 ament_target_dependencies(z1_robot_controller_node
   rclcpp geometry_msgs sensor_msgs std_msgs tmms_msgs)
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+  set(Z1_SDK_ARCH "aarch64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+  set(Z1_SDK_ARCH "x86_64")
+else()
+  message(FATAL_ERROR "z1_robot_controller: no Z1 SDK build for CMAKE_SYSTEM_PROCESSOR '${CMAKE_SYSTEM_PROCESSOR}'")
+endif()
+
 target_link_libraries(z1_robot_controller_node
-  ${CMAKE_CURRENT_SOURCE_DIR}/lib/libZ1_SDK_x86_64.so)
+  ${CMAKE_CURRENT_SOURCE_DIR}/lib/libZ1_SDK_${Z1_SDK_ARCH}.so)
 set_target_properties(z1_robot_controller_node PROPERTIES
   BUILD_WITH_INSTALL_RPATH TRUE
   INSTALL_RPATH "$ORIGIN/../../share/${PROJECT_NAME}/lib")
