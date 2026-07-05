@@ -1,7 +1,6 @@
 devel/
 logs/
 build/
-bin/
 msg_gen/
 srv_gen/
 msg/*Action.msg
@@ -51,3 +50,5 @@ CATKIN_IGNORE
 
 install/
 log/
+
+*.tar.gz
