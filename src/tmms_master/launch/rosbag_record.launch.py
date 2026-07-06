@@ -28,8 +28,6 @@ def generate_launch_description():
             'ros2', 'bag', 'record',
             '-o', LaunchConfiguration('output'),
             '--storage', 'mcap',
-            '--compression-mode', 'message',
-            '--compression-format', 'zstd',
             '--max-bag-size', str(200 * 1024 * 1024),
             *TOPICS,
         ],

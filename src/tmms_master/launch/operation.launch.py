@@ -2,7 +2,7 @@ import os
 import platform
 
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, IncludeLaunchDescription
+from launch.actions import ExecuteProcess, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import (
     AnyLaunchDescriptionSource, PythonLaunchDescriptionSource)
 from launch_ros.actions import Node
@@ -53,31 +53,38 @@ def generate_launch_description():
             name='z1_robot_controller',
             output='screen'),
 
-        # Gamepad driver (publishes /joy)
-        Node(
-            package='joy',
-            executable='joy_node',
-            name='joy',
-            output='screen'),
+        # Remaining nodes start 5s after z1_ctrl_bin/spacenav/z1_robot_controller
+        # come up — starting everything at once was causing the z1 gripper
+        # bin to fail to connect.
+        TimerAction(
+            period=5.0,
+            actions=[
+                # Gamepad driver (publishes /joy)
+                Node(
+                    package='joy',
+                    executable='joy_node',
+                    name='joy',
+                    output='screen'),
 
-        # B2 quadruped controller
-        Node(
-            package='quadruped_controller',
-            executable='quadruped_controller_node',
-            name='quadruped_controller',
-            output='screen'),
+                # B2 quadruped controller
+                Node(
+                    package='quadruped_controller',
+                    executable='quadruped_controller_node',
+                    name='quadruped_controller',
+                    output='screen'),
 
-        # Rosbridge WebSocket server (exposes ROS2 topics over ws://)
-        IncludeLaunchDescription(
-            AnyLaunchDescriptionSource([
-                get_package_share_directory('rosbridge_server'),
-                '/launch/rosbridge_websocket_launch.xml',
-            ])),
+                # Rosbridge WebSocket server (exposes ROS2 topics over ws://)
+                IncludeLaunchDescription(
+                    AnyLaunchDescriptionSource([
+                        get_package_share_directory('rosbridge_server'),
+                        '/launch/rosbridge_websocket_launch.xml',
+                    ])),
 
-        # Rosbag recording (cameras + quadruped status)
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource([
-                get_package_share_directory('tmms_master'),
-                '/launch/rosbag_record.launch.py',
-            ])),
+                # Rosbag recording (cameras + quadruped status)
+                # IncludeLaunchDescription(
+                #     PythonLaunchDescriptionSource([
+                #         get_package_share_directory('tmms_master'),
+                #         '/launch/rosbag_record.launch.py',
+                #     ])),
+            ]),
     ])
