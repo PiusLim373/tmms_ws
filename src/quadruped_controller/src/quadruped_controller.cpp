@@ -58,6 +58,7 @@ void QuadrupedController::cmdVelUiCallback(const geometry_msgs::msg::Twist::Shar
 {
   std::lock_guard<std::mutex> lock(vel_mutex_);
   ui_twist_ = *msg;
+  last_ui_time_ = this->now();
 }
 
 void QuadrupedController::sportStateCallback(
@@ -120,8 +121,11 @@ void QuadrupedController::moveTimerCallback()
 
   {
     std::lock_guard<std::mutex> lock(vel_mutex_);
-    bool joy_active = (this->now() - last_joy_time_).seconds() < 0.5;
-    const auto & chosen = joy_active ? joy_twist_ : ui_twist_;
+    auto now = this->now();
+    bool joy_fresh = (now - last_joy_time_).seconds() < 0.5;
+    bool ui_fresh = (now - last_ui_time_).seconds() < 1.0;
+    static const geometry_msgs::msg::Twist kZeroTwist{};
+    const auto & chosen = joy_fresh ? joy_twist_ : (ui_fresh ? ui_twist_ : kZeroTwist);
     lx = static_cast<float>(chosen.linear.x);
     ly = static_cast<float>(chosen.linear.y);
     az = static_cast<float>(chosen.angular.z);

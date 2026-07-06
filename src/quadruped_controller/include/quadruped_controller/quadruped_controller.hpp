@@ -48,6 +48,7 @@ private:
   geometry_msgs::msg::Twist joy_twist_;
   geometry_msgs::msg::Twist ui_twist_;
   rclcpp::Time last_joy_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_ui_time_{0, 0, RCL_ROS_TIME};
   std::mutex vel_mutex_;
 
   uint8_t mode_{0};

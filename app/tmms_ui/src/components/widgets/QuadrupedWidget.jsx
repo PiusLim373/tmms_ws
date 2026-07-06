@@ -29,9 +29,14 @@ export function QuadrupedWidget({ heldKeys }) {
 
   const speed = SPEED_MAP[speedLevel]
 
-  const wasMovingRef = useRef(false)
+  // isMovingRef doubles as edge-detection (read as "was moving" before each update) and as
+  // the live state the 4Hz repeat-publish interval below checks.
+  const isMovingRef = useRef(false)
+  const desiredCmdRef = useRef({ lx: 0, ly: 0, az: 0 })
 
   const { active: joyActive, lastMsg: joyMsg } = useTopicActivity('/joy', 'sensor_msgs/Joy', 500)
+  const joyActiveRef = useRef(joyActive)
+  useEffect(() => { joyActiveRef.current = joyActive }, [joyActive])
   const { active: statusActive, lastMsg: statusMsg } = useTopicActivity(
     '/quadruped_main_status', 'tmms_msgs/QuadrupedMainStatus', 1000
   )
@@ -81,7 +86,13 @@ export function QuadrupedWidget({ heldKeys }) {
 
   // Keyboard → publish quadruped velocity
   useEffect(() => {
-    if (joyActive) return
+    if (joyActive) {
+      // Gamepad just took over — don't let a stale held-key command keep being
+      // repeated by the interval below while the gamepad has control.
+      desiredCmdRef.current = { lx: 0, ly: 0, az: 0 }
+      isMovingRef.current = false
+      return
+    }
 
     const shift = heldKeys.has('ShiftLeft') || heldKeys.has('ShiftRight')
 
@@ -99,16 +110,30 @@ export function QuadrupedWidget({ heldKeys }) {
     }
 
     const isMoving = lx !== 0 || ly !== 0 || az !== 0
+    const wasMoving = isMovingRef.current
+    desiredCmdRef.current = { lx, ly, az }
+    isMovingRef.current = isMoving
 
     if (isWalkMode) {
-      if (isMoving || wasMovingRef.current) {
+      if (isMoving || wasMoving) {
         sendCmdVel(lx, ly, az)
       }
     }
-    wasMovingRef.current = isMoving
 
     setJoyDisplay(isWalkMode ? { x: lx, y: ly, yaw: az } : { x: 0, y: 0, yaw: 0 })
   }, [heldKeys, isWalkMode, speedLevel, joyActive, speed, sendCmdVel])
+
+  // Repeat-publish at 4Hz while a key is held or the joystick is pinned at a nonzero
+  // deflection — otherwise the backend has no way to tell the UI is still connected
+  // between transitions, and its patience timeout would (correctly) stop the robot.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (joyActiveRef.current || !isWalkModeRef.current || !isMovingRef.current) return
+      const { lx, ly, az } = desiredCmdRef.current
+      sendCmdVel(lx, ly, az)
+    }, 250)
+    return () => clearInterval(id)
+  }, [sendCmdVel])
 
   // Reflect /joy msg in display when gamepad is connected
   useEffect(() => {
@@ -122,12 +147,18 @@ export function QuadrupedWidget({ heldKeys }) {
 
   // Drag callbacks — publish directly, independent of keyboard effect
   const handleJoyDrag = useCallback((x, y) => {
-    if (isWalkModeRef.current) sendCmdVel(x, y, 0)
+    desiredCmdRef.current = { ...desiredCmdRef.current, lx: x, ly: y }
+    const { lx, ly, az } = desiredCmdRef.current
+    isMovingRef.current = lx !== 0 || ly !== 0 || az !== 0
+    if (isWalkModeRef.current) sendCmdVel(lx, ly, az)
     setJoyDisplay(prev => ({ ...prev, x, y }))
   }, [sendCmdVel])
 
   const handleYawDrag = useCallback((v) => {
-    if (isWalkModeRef.current) sendCmdVel(0, 0, v)
+    desiredCmdRef.current = { ...desiredCmdRef.current, az: v }
+    const { lx, ly, az } = desiredCmdRef.current
+    isMovingRef.current = lx !== 0 || ly !== 0 || az !== 0
+    if (isWalkModeRef.current) sendCmdVel(lx, ly, az)
     setJoyDisplay(prev => ({ ...prev, yaw: v }))
   }, [sendCmdVel])
 

@@ -56,6 +56,7 @@ void Z1RobotController::joyUiCallback(const sensor_msgs::msg::Joy::SharedPtr msg
 {
   std::lock_guard<std::mutex> lock(joy_mutex_);
   ui_joy_ = *msg;
+  last_ui_joy_time_ = this->now();
 }
 
 void Z1RobotController::armTimerCallback()
@@ -65,8 +66,11 @@ void Z1RobotController::armTimerCallback()
 
   {
     std::lock_guard<std::mutex> lock(joy_mutex_);
-    bool spacenav_active = (this->now() - last_spacenav_time_).seconds() < 2.0;
-    const auto & joy = spacenav_active ? spacenav_joy_ : ui_joy_;
+    auto now = this->now();
+    bool spacenav_fresh = (now - last_spacenav_time_).seconds() < 2.0;
+    bool ui_fresh = (now - last_ui_joy_time_).seconds() < 1.0;
+    static const sensor_msgs::msg::Joy kZeroJoy{};
+    const auto & joy = spacenav_fresh ? spacenav_joy_ : (ui_fresh ? ui_joy_ : kZeroJoy);
 
     if (joy.axes.size() >= 6) {
       twist.linear.x  = joy.axes[0];
@@ -122,18 +126,7 @@ void Z1RobotController::armPresetCallback(
     arm_.labelRun("forward");
     arm_.startTrack(UNITREE_ARM::ArmFSMState::CARTESIAN);
     RCLCPP_INFO(get_logger(), "Going to forward position");
-  } else if (label == "back") {
-    arm_.labelRun("back");
-    arm_.startTrack(UNITREE_ARM::ArmFSMState::CARTESIAN);
-    RCLCPP_INFO(get_logger(), "Going to back position");
-  } else if (label == "discharge") {
-    arm_.labelRun("forward");
-    arm_.labelRun("back");
-    arm_.labelRun("discharge");
-    arm_.startTrack(UNITREE_ARM::ArmFSMState::CARTESIAN);
-    RCLCPP_INFO(get_logger(), "Going to discharge position");
   } else if (label == "down") {
-    arm_.labelRun("back");
     arm_.labelRun("forward");
     arm_.labelRun("down");
     arm_.startTrack(UNITREE_ARM::ArmFSMState::CARTESIAN);

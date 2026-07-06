@@ -35,6 +35,7 @@ private:
   sensor_msgs::msg::Joy spacenav_joy_{};
   sensor_msgs::msg::Joy ui_joy_{};
   rclcpp::Time last_spacenav_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_ui_joy_time_{0, 0, RCL_ROS_TIME};
   double gripper_{0.0};
   double gripper_vel_{0.0};
   std::mutex joy_mutex_;

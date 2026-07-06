@@ -10,7 +10,6 @@ const SPEED_MAP = { LOW: 0.2, MID: 0.4, HIGH: 0.7 }
 const PRESETS = [
   { label: 'home',    display: 'HOME' },
   { label: 'forward', display: 'FWD'  },
-  { label: 'back',    display: 'BACK' },
   { label: 'down',    display: 'DOWN' },
 ]
 
@@ -35,10 +34,15 @@ export function Z1ArmWidget({ heldKeys }) {
 
   const speed = SPEED_MAP[speedLevel]
 
-  const wasPublishingRef = useRef(false)
+  // isActiveRef doubles as edge-detection (read as "was active" before each update) and as
+  // the live state the 4Hz repeat-publish interval below checks.
+  const isActiveRef = useRef(false)
+  const desiredCmdRef = useRef({ tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0, btn0: 0, btn1: 0 })
   const { lastMsg: spacenavMsg } = useTopicActivity('/spacenav/joy', 'sensor_msgs/Joy', 500)
   const lastNonZeroRef = useRef(0)
   const [spacenavActive, setSpacenavActive] = useState(false)
+  const spacenavActiveRef = useRef(spacenavActive)
+  useEffect(() => { spacenavActiveRef.current = spacenavActive }, [spacenavActive])
 
   // Update lastNonZeroRef only when msg has actual movement/button input (not idle zeros)
   useEffect(() => {
@@ -66,7 +70,13 @@ export function Z1ArmWidget({ heldKeys }) {
 
   // Keyboard → publish z1 joy
   useEffect(() => {
-    if (spacenavActive) return
+    if (spacenavActive) {
+      // SpaceMouse just took over — don't let a stale held-key command keep being
+      // repeated by the interval below while the SpaceMouse has control.
+      desiredCmdRef.current = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0, btn0: 0, btn1: 0 }
+      isActiveRef.current = false
+      return
+    }
     const tag = document.activeElement?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
 
@@ -97,15 +107,29 @@ export function Z1ArmWidget({ heldKeys }) {
     const axes    = [tx, ty, tz, rx, ry, rz]
     const buttons = [btn0, btn1]
     const isPublishing = axes.some((v) => v !== 0) || btn0 !== 0 || btn1 !== 0
+    const wasPublishing = isActiveRef.current
+    desiredCmdRef.current = { tx, ty, tz, rx, ry, rz, btn0, btn1 }
+    isActiveRef.current = isPublishing
 
-    if (isPublishing || wasPublishingRef.current) {
+    if (isPublishing || wasPublishing) {
       publishZ1JoyUi(axes, buttons)
     }
-    wasPublishingRef.current = isPublishing
 
     setSixDof({ tx, ty, tz, rx, ry, rz })
     setGripperState(btn1 === 1 ? 'open' : btn0 === 1 ? 'close' : 'idle')
   }, [heldKeys, speedLevel, spacenavActive, speed])
+
+  // Repeat-publish at 4Hz while a key is held or a drag/gripper button is active —
+  // otherwise the backend has no way to tell the UI is still connected between
+  // transitions, and its patience timeout would (correctly) stop the arm.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (spacenavActiveRef.current || !isActiveRef.current) return
+      const c = desiredCmdRef.current
+      publishZ1JoyUi([c.tx, c.ty, c.tz, c.rx, c.ry, c.rz], [c.btn0, c.btn1])
+    }, 250)
+    return () => clearInterval(id)
+  }, [])
 
   // Reflect spacenav msg in display
   useEffect(() => {
@@ -130,24 +154,38 @@ export function Z1ArmWidget({ heldKeys }) {
     )
   }
 
-  // Drag callbacks — publish directly
+  // Drag callbacks — publish directly. Each sends a full, exclusive 8-value snapshot
+  // (everything it doesn't own zeroed out), so desiredCmdRef is just assigned wholesale.
   const handleTransDrag = useCallback((x, y) => {
-    publishZ1JoyUi([x, y, 0, 0, 0, 0], [0, 0])
+    const cmd = { tx: x, ty: y, tz: 0, rx: 0, ry: 0, rz: 0, btn0: 0, btn1: 0 }
+    desiredCmdRef.current = cmd
+    isActiveRef.current = x !== 0 || y !== 0
+    publishZ1JoyUi([cmd.tx, cmd.ty, cmd.tz, cmd.rx, cmd.ry, cmd.rz], [cmd.btn0, cmd.btn1])
     setSixDof(prev => ({ ...prev, tx: x, ty: y }))
   }, [])
 
   const handleRotDrag = useCallback((x, y) => {
-    publishZ1JoyUi([0, 0, 0, -y, x, 0], [0, 0])  // drag right (y-) → +rx, drag up (x+) → +ry
+    // drag right (y-) → +rx, drag up (x+) → +ry
+    const cmd = { tx: 0, ty: 0, tz: 0, rx: -y, ry: x, rz: 0, btn0: 0, btn1: 0 }
+    desiredCmdRef.current = cmd
+    isActiveRef.current = x !== 0 || y !== 0
+    publishZ1JoyUi([cmd.tx, cmd.ty, cmd.tz, cmd.rx, cmd.ry, cmd.rz], [cmd.btn0, cmd.btn1])
     setSixDof(prev => ({ ...prev, rx: -y, ry: x }))
   }, [])
 
   const handleTzDrag = useCallback((v) => {
-    publishZ1JoyUi([0, 0, v, 0, 0, 0], [0, 0])
+    const cmd = { tx: 0, ty: 0, tz: v, rx: 0, ry: 0, rz: 0, btn0: 0, btn1: 0 }
+    desiredCmdRef.current = cmd
+    isActiveRef.current = v !== 0
+    publishZ1JoyUi([cmd.tx, cmd.ty, cmd.tz, cmd.rx, cmd.ry, cmd.rz], [cmd.btn0, cmd.btn1])
     setSixDof(prev => ({ ...prev, tz: v }))
   }, [])
 
   const handleRzDrag = useCallback((v) => {
-    publishZ1JoyUi([0, 0, 0, 0, 0, v], [0, 0])
+    const cmd = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: v, btn0: 0, btn1: 0 }
+    desiredCmdRef.current = cmd
+    isActiveRef.current = v !== 0
+    publishZ1JoyUi([cmd.tx, cmd.ty, cmd.tz, cmd.rx, cmd.ry, cmd.rz], [cmd.btn0, cmd.btn1])
     setSixDof(prev => ({ ...prev, rz: v }))
   }, [])
 
@@ -321,9 +359,21 @@ export function Z1ArmWidget({ heldKeys }) {
           >
             <button
               disabled={spacenavActive}
-              onPointerDown={() => { publishZ1JoyUi([0,0,0,0,0,0], [1,0]); setGripperState('close') }}
-              onPointerUp={()   => { publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle') }}
-              onPointerLeave={() => { publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle') }}
+              onPointerDown={() => {
+                desiredCmdRef.current = { tx:0, ty:0, tz:0, rx:0, ry:0, rz:0, btn0:1, btn1:0 }
+                isActiveRef.current = true
+                publishZ1JoyUi([0,0,0,0,0,0], [1,0]); setGripperState('close')
+              }}
+              onPointerUp={() => {
+                desiredCmdRef.current = { tx:0, ty:0, tz:0, rx:0, ry:0, rz:0, btn0:0, btn1:0 }
+                isActiveRef.current = false
+                publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle')
+              }}
+              onPointerLeave={() => {
+                desiredCmdRef.current = { tx:0, ty:0, tz:0, rx:0, ry:0, rz:0, btn0:0, btn1:0 }
+                isActiveRef.current = false
+                publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle')
+              }}
               style={{
                 flex: 1,
                 maxWidth: 160,
@@ -361,9 +411,21 @@ export function Z1ArmWidget({ heldKeys }) {
 
             <button
               disabled={spacenavActive}
-              onPointerDown={() => { publishZ1JoyUi([0,0,0,0,0,0], [0,1]); setGripperState('open') }}
-              onPointerUp={()   => { publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle') }}
-              onPointerLeave={() => { publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle') }}
+              onPointerDown={() => {
+                desiredCmdRef.current = { tx:0, ty:0, tz:0, rx:0, ry:0, rz:0, btn0:0, btn1:1 }
+                isActiveRef.current = true
+                publishZ1JoyUi([0,0,0,0,0,0], [0,1]); setGripperState('open')
+              }}
+              onPointerUp={() => {
+                desiredCmdRef.current = { tx:0, ty:0, tz:0, rx:0, ry:0, rz:0, btn0:0, btn1:0 }
+                isActiveRef.current = false
+                publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle')
+              }}
+              onPointerLeave={() => {
+                desiredCmdRef.current = { tx:0, ty:0, tz:0, rx:0, ry:0, rz:0, btn0:0, btn1:0 }
+                isActiveRef.current = false
+                publishZ1JoyUi([0,0,0,0,0,0], [0,0]); setGripperState('idle')
+              }}
               style={{
                 flex: 1,
                 maxWidth: 160,
