@@ -1,5 +1,8 @@
 #include "z1_robot_controller/z1_robot_controller.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 using namespace std::chrono_literals;
 
 Z1RobotController::Z1RobotController()
@@ -135,6 +138,12 @@ void Z1RobotController::armPresetCallback(
     arm_.labelRun("test");
     arm_.startTrack(UNITREE_ARM::ArmFSMState::CARTESIAN);
     RCLCPP_INFO(get_logger(), "Going to test position");
+  } else if (label == "rotate_cw") {
+    rotateWristJoint(-M_PI / 4.0);
+    RCLCPP_INFO(get_logger(), "Rotated wrist 45 deg CW");
+  } else if (label == "rotate_ccw") {
+    rotateWristJoint(M_PI / 4.0);
+    RCLCPP_INFO(get_logger(), "Rotated wrist 45 deg CCW");
   } else {
     pause_arm_ = false;
     res->success = false;
@@ -153,4 +162,30 @@ void Z1RobotController::publishGripperTau()
   std_msgs::msg::Float32 msg;
   msg.data = static_cast<float>(arm_.lowstate->getGripperTau());
   gripper_tau_pub_->publish(msg);
+}
+
+void Z1RobotController::rotateWristJoint(double deltaRad)
+{
+  Vec6 startQ = arm_.lowstate->getQ();
+  Vec6 targetQ = startQ;
+
+  auto qMax = arm_._ctrlComp->armModel->getJointQMax();
+  auto qMin = arm_._ctrlComp->armModel->getJointQMin();
+  targetQ[5] = std::clamp(startQ[5] + deltaRad, qMin[5], qMax[5]);
+
+  arm_.startTrack(UNITREE_ARM::ArmFSMState::JOINTCTRL);
+
+  const double duration = 500.0;  // ~1s at dt=0.002 (500Hz)
+  UNITREE_ARM::Timer timer(arm_._ctrlComp->dt);
+  for (int i = 0; i <= duration; ++i) {
+    double s = i / duration;
+    arm_.q = startQ * (1 - s) + targetQ * s;
+    arm_.qd = (targetQ - startQ) / (duration * arm_._ctrlComp->dt);
+    arm_.setArmCmd(arm_.q, arm_.qd);
+    timer.sleep();
+  }
+  arm_.qd.setZero();
+  arm_.setArmCmd(arm_.q, arm_.qd);
+
+  arm_.startTrack(UNITREE_ARM::ArmFSMState::CARTESIAN);
 }

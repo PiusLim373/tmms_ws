@@ -11,6 +11,8 @@ const PRESETS = [
   { label: 'home',    display: 'HOME' },
   { label: 'forward', display: 'FWD'  },
   { label: 'down',    display: 'DOWN' },
+  { label: 'rotate_ccw', display: 'WRIST ↺ 45°' },
+  { label: 'rotate_cw',  display: 'WRIST ↻ 45°' },
 ]
 
 // ROS convention: +x = forward (W/S), +y = left (A/D)

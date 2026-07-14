@@ -26,6 +26,9 @@ private:
     const tmms_msgs::srv::StringTrigger::Request::SharedPtr req,
     tmms_msgs::srv::StringTrigger::Response::SharedPtr res);
   void publishGripperTau();
+  // Rotates joint 6 (wrist/gripper-roll) by deltaRad from its current angle,
+  // holding all other joints fixed. +ve = CCW, -ve = CW (looking down the wrist axis).
+  void rotateWristJoint(double deltaRad);
 
   UNITREE_ARM::unitreeArm arm_;
 

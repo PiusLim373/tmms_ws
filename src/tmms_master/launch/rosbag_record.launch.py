@@ -10,6 +10,10 @@ TOPICS = [
     '/wrist_cam/compressed',
     '/third_person_cam/compressed',
     '/quadruped_main_status',
+    '/lf/sportmodestate',
+    '/lf/odommodestate',
+    '/lf/lowstate',
+    
 ]
 
 _DEFAULT_BAG_DIR = os.path.join(
