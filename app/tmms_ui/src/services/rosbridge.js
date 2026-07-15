@@ -1,6 +1,6 @@
 import { Ros, Topic, Service } from 'roslib'
 
-const WS_URL = 'ws://localhost:9090'
+const WS_URL = `ws://${window.location.hostname}:9090`
 
 export const ros = new Ros({ url: WS_URL })
 

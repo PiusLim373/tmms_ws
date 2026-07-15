@@ -36,8 +36,10 @@ endif()
 target_link_libraries(z1_robot_controller_node
   ${CMAKE_CURRENT_SOURCE_DIR}/lib/libZ1_SDK_${Z1_SDK_ARCH}.so)
 set_target_properties(z1_robot_controller_node PROPERTIES
-  BUILD_WITH_INSTALL_RPATH TRUE
-  INSTALL_RPATH "${CMAKE_CURRENT_SOURCE_DIR}/lib")
+  # BUILD_WITH_INSTALL_RPATH TRUE
+  # INSTALL_RPATH "${CMAKE_CURRENT_SOURCE_DIR}/lib")
+  INSTALL_RPATH "$ORIGIN/../../share/${PROJECT_NAME}/lib"
+  INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 install(TARGETS z1_robot_controller_node
   DESTINATION lib/${PROJECT_NAME})

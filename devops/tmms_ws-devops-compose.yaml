@@ -1,6 +1,6 @@
 services:
   tmms_build:
-    image: tmms_image:0.1.0
+    image: tmms_image:0.1.1
     platform: linux/arm64
     container_name: tmms_build
     # Enable all port forwarding
