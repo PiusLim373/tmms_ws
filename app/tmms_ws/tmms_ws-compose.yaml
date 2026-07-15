@@ -19,14 +19,13 @@ services:
       # Required
       - /etc/localtime:/etc/localtime:ro                              # timezone binding
       - /etc/timezone:/etc/timezone:ro                                # timezone binding
-      - /media:/media                                                 # rosbag usb binding
       - /home/unitree/.htxgrrt/logs:/home/htxgrrt/.htxgrrt/logs               # logs binding
-      - /home/unitree/.htxgrrt/etc:/home/htxgrrt/.htxgrrt/etc                 # config binding
+      - /home/unitree/.htxgrrt/bags:/home/htxgrrt/.htxgrrt/bags               # rosbags binding
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # Optional: ~/tmms_ws/install folder binding for custom binary
       - /home/unitree/.htxgrrt/bin/tmms_ws/install:/home/htxgrrt/.htxgrrt/bin/tmms_ws/install
-      - /home/unitree/.htxgrrt/bin/tmms_ws/build:/home/htxgrrt/.htxgrrt/bin/tmms_ws/build
-      - /home/unitree/.htxgrrt/bin/tmms_ws/src:/home/htxgrrt/.htxgrrt/bin/tmms_ws/src
+      # - /home/unitree/.htxgrrt/bin/tmms_ws/build:/home/htxgrrt/.htxgrrt/bin/tmms_ws/build
+      # - /home/unitree/.htxgrrt/bin/tmms_ws/src:/home/htxgrrt/.htxgrrt/bin/tmms_ws/src
       - /home/unitree/.htxgrrt/bin/tmms_ws/entrypoint.sh:/home/htxgrrt/.htxgrrt/bin/tmms_ws/entrypoint.sh
       - /home/unitree/.htxgrrt/bin/tmms_ws/custom.env:/home/htxgrrt/.htxgrrt/bin/tmms_ws/custom.env
       - /home/unitree/.htxgrrt/bin/tmms_ws/cyclonedds.xml:/home/htxgrrt/.htxgrrt/bin/tmms_ws/cyclonedds.xml

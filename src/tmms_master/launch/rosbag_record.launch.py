@@ -17,8 +17,7 @@ TOPICS = [
 ]
 
 _DEFAULT_BAG_DIR = os.path.join(
-    os.path.expanduser('~'), 'all_ws', 'b2_project_ws', 'tmms_ws',
-    'app', 'tmms_recordings',
+    '/home/htxgrrt/.htxgrrt/bags/ongoing_rosbags',
     'tmms_' + datetime.now().strftime('%Y_%m_%d-%H_%M_%S'))
 
 

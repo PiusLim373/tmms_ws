@@ -39,12 +39,12 @@ def generate_launch_description():
             additional_env={'LD_LIBRARY_PATH': new_ld},
             output='screen'),
 
-        # SpaceNavigator driver
-        Node(
-            package='spacenav',
-            executable='spacenav_node',
-            name='spacenav',
-            output='screen'),
+        # SpaceNavigator driver, skip for docker
+        # Node(
+        #     package='spacenav',
+        #     executable='spacenav_node',
+        #     name='spacenav',
+        #     output='screen'),
 
         # Z1 arm ROS2 controller
         Node(
@@ -59,12 +59,12 @@ def generate_launch_description():
         TimerAction(
             period=5.0,
             actions=[
-                # Gamepad driver (publishes /joy)
-                Node(
-                    package='joy',
-                    executable='joy_node',
-                    name='joy',
-                    output='screen'),
+                # Gamepad driver (publishes /joy), skip for docker
+                # Node(
+                #     package='joy',
+                #     executable='joy_node',
+                #     name='joy',
+                #     output='screen'),
 
                 # B2 quadruped controller
                 Node(
@@ -81,10 +81,10 @@ def generate_launch_description():
                     ])),
 
                 # Rosbag recording (cameras + quadruped status)
-                # IncludeLaunchDescription(
-                #     PythonLaunchDescriptionSource([
-                #         get_package_share_directory('tmms_master'),
-                #         '/launch/rosbag_record.launch.py',
-                #     ])),
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource([
+                        get_package_share_directory('tmms_master'),
+                        '/launch/rosbag_record.launch.py',
+                    ])),
             ]),
     ])
