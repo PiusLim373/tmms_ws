@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { publishQuadrupedCmdVel, callService } from '../../services/rosbridge'
 import { useTopicActivity } from '../../hooks/useTopicActivity'
+import { useGamepad } from '../../hooks/useGamepad'
 import { GearShift } from '../ui/GearShift'
 import { SpeedSelector } from '../ui/SpeedSelector'
 import { JoystickDisplay, AxisKnob } from '../ui/JoystickDisplay'
@@ -21,6 +22,12 @@ const MODE_FROM_STRING = { damping: 1, lie_down: 1, joint_lock: 2, balance_stand
 const JOY_HINTS = { up: '↑', down: '↓', left: '←', right: '→' }
 
 export function QuadrupedWidget({ heldKeys }) {
+  // Browser-native flight controller capture — publishes directly to /joy,
+  // a drop-in replacement for the native joy_node. Runs only while this
+  // widget is mounted (see useTopicActivity('/joy', ...) below for the
+  // resulting display/gating, unchanged from the native-driver behavior).
+  useGamepad()
+
   const [speedLevel, setSpeedLevel] = useState('MID')
   const [modalOpen, setModalOpen]   = useState(false)
   const [pendingMode, setPendingMode] = useState(null)

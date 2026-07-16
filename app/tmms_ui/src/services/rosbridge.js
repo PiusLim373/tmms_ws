@@ -1,6 +1,9 @@
 import { Ros, Topic, Service } from 'roslib'
 
-const WS_URL = `ws://${window.location.hostname}:9090`
+// https pages can't open a plain ws:// socket (browsers block it as mixed
+// content), so match whatever scheme the page itself loaded over.
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss' : 'ws'
+const WS_URL = `${WS_PROTOCOL}://${window.location.hostname}:9090`
 
 export const ros = new Ros({ url: WS_URL })
 
@@ -24,6 +27,19 @@ export function publishQuadrupedCmdVel(lx, ly, az) {
 // buttons: number[2]  (btn0, btn1)
 export function publishZ1JoyUi(axes, buttons) {
   getPublisher('/z1_joy_ui', 'sensor_msgs/Joy').publish({ axes, buttons })
+}
+
+// Browser Gamepad API → drop-in replacement for joy_node's /joy, verified
+// against the flight controller's raw axes/buttons via ros2 topic echo.
+export function publishJoy(axes, buttons) {
+  getPublisher('/joy', 'sensor_msgs/Joy').publish({ axes, buttons })
+}
+
+// Browser WebHID → drop-in replacement for spacenav_node's /spacenav/joy,
+// verified against the SpaceMouse's raw axes/buttons via ros2 topic echo.
+// axes: number[6] (tx,ty,tz,rx,ry,rz), buttons: number[2] (btn0, btn1)
+export function publishSpacenavJoy(axes, buttons) {
+  getPublisher('/spacenav/joy', 'sensor_msgs/Joy').publish({ axes, buttons })
 }
 
 export function publishThirdPersonCamControl(cmd) {

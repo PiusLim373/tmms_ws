@@ -3,12 +3,15 @@ import cors from 'cors'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import https from 'https'
 import archiver from 'archiver'
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 
 const PORT = process.env.PORT || 3001
 const isProd = process.env.NODE_ENV === 'production'
+const TLS_CERT = process.env.TMMS_TLS_CERT
+const TLS_KEY = process.env.TMMS_TLS_KEY
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const BAGS_DIR = process.env.TMMS_BAGS_DIR
@@ -153,6 +156,15 @@ if (isProd) {
   app.use(express.static(path.join(__dirname, 'dist')))
 }
 
-app.listen(PORT, () => {
-  console.log(`[ui_backend] listening on http://localhost:${PORT}`)
-})
+if (TLS_CERT && TLS_KEY) {
+  https.createServer({
+    cert: fs.readFileSync(TLS_CERT),
+    key: fs.readFileSync(TLS_KEY),
+  }, app).listen(PORT, () => {
+    console.log(`[ui_backend] https listening on ${PORT}`)
+  })
+} else {
+  app.listen(PORT, () => {
+    console.log(`[ui_backend] listening on http://localhost:${PORT}`)
+  })
+}

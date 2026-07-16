@@ -39,13 +39,6 @@ def generate_launch_description():
             additional_env={'LD_LIBRARY_PATH': new_ld},
             output='screen'),
 
-        # SpaceNavigator driver, skip for docker
-        # Node(
-        #     package='spacenav',
-        #     executable='spacenav_node',
-        #     name='spacenav',
-        #     output='screen'),
-
         # Z1 arm ROS2 controller
         Node(
             package='z1_robot_controller',
@@ -59,13 +52,6 @@ def generate_launch_description():
         TimerAction(
             period=5.0,
             actions=[
-                # Gamepad driver (publishes /joy), skip for docker
-                # Node(
-                #     package='joy',
-                #     executable='joy_node',
-                #     name='joy',
-                #     output='screen'),
-
                 # B2 quadruped controller
                 Node(
                     package='quadruped_controller',
@@ -73,12 +59,19 @@ def generate_launch_description():
                     name='quadruped_controller',
                     output='screen'),
 
-                # Rosbridge WebSocket server (exposes ROS2 topics over ws://)
+                # Rosbridge WebSocket server (exposes ROS2 topics over wss://
+                # — the dashboard now loads over https, and browsers block a
+                # plain ws:// connection from an https page as mixed content)
                 IncludeLaunchDescription(
                     AnyLaunchDescriptionSource([
                         get_package_share_directory('rosbridge_server'),
                         '/launch/rosbridge_websocket_launch.xml',
-                    ])),
+                    ]),
+                    launch_arguments={
+                        'ssl': 'true',
+                        'certfile': '/home/htxgrrt/.htxgrrt/certs/tmms_b2.crt',
+                        'keyfile': '/home/htxgrrt/.htxgrrt/certs/tmms_b2.key',
+                    }.items()),
 
                 # Rosbag recording (cameras + quadruped status)
                 IncludeLaunchDescription(

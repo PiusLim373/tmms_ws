@@ -1,4 +1,4 @@
-FROM --platform=linux/arm64 ros:jazzy
+FROM ros:jazzy
 
 USER root
 

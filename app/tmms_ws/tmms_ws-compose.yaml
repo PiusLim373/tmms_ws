@@ -2,8 +2,7 @@ version: "3.9"
 
 services:
   tmms_run:
-    image: tmms_image:0.1.0
-    platform: linux/arm64
+    image: tmms_image:0.1.1
     container_name: tmms_run
     entrypoint: ["/home/htxgrrt/.htxgrrt/bin/tmms_ws/entrypoint.sh"]
     # Enable all port forwarding
@@ -21,6 +20,7 @@ services:
       - /etc/timezone:/etc/timezone:ro                                # timezone binding
       - /home/unitree/.htxgrrt/logs:/home/htxgrrt/.htxgrrt/logs               # logs binding
       - /home/unitree/.htxgrrt/bags:/home/htxgrrt/.htxgrrt/bags               # rosbags binding
+      - /home/unitree/.htxgrrt/certs:/home/htxgrrt/.htxgrrt/certs:ro          # certs binding
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # Optional: ~/tmms_ws/install folder binding for custom binary
       - /home/unitree/.htxgrrt/bin/tmms_ws/install:/home/htxgrrt/.htxgrrt/bin/tmms_ws/install

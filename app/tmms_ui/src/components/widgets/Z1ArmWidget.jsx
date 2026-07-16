@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { publishZ1JoyUi, callService } from '../../services/rosbridge'
 import { useTopicActivity } from '../../hooks/useTopicActivity'
+import { useSpaceMouse } from '../../hooks/useSpaceMouse'
 import { SpeedSelector } from '../ui/SpeedSelector'
 import { JoystickDisplay, AxisKnob } from '../ui/JoystickDisplay'
 import { Toast } from '../ui/Toast'
@@ -29,6 +30,12 @@ const GROUP_LABEL_STYLE = {
 }
 
 export function Z1ArmWidget({ heldKeys }) {
+  // Browser-native SpaceMouse capture (WebHID) — publishes directly to
+  // /spacenav/joy, a drop-in replacement for the native spacenav_node. Runs
+  // only while this widget is mounted; see useTopicActivity('/spacenav/joy', ...)
+  // below for the resulting display/gating, unchanged from native-driver behavior.
+  const spacemouse = useSpaceMouse()
+
   const [speedLevel, setSpeedLevel] = useState('MID')
   const [sixDof, setSixDof] = useState({ tx:0, ty:0, tz:0, rx:0, ry:0, rz:0 })
   const [gripperState, setGripperState] = useState('idle')
@@ -204,6 +211,39 @@ export function Z1ArmWidget({ heldKeys }) {
             <span style={{ color: 'var(--text-dim)', fontSize: 10, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
               {serviceStatus.lastResult}
             </span>
+          )}
+
+          {spacemouse.connected ? (
+            <div className="flex items-center gap-1.5" title={spacemouse.deviceName} style={{ flexShrink: 0 }}>
+              <span
+                style={{
+                  width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
+                  background: '#22C55E',
+                }}
+              />
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {spacemouse.deviceName}
+              </span>
+            </div>
+          ) : (
+            <button
+              onClick={spacemouse.connect}
+              title={spacemouse.error || 'Connect a SpaceMouse via WebHID'}
+              style={{
+                flexShrink: 0,
+                padding: '2px 8px',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10,
+                letterSpacing: '0.04em',
+                borderRadius: 4,
+                border: `1px solid ${spacemouse.error ? '#EF4444' : 'var(--border)'}`,
+                background: 'transparent',
+                color: spacemouse.error ? '#EF4444' : 'var(--text-dim)',
+                cursor: 'pointer',
+              }}
+            >
+              Connect SpaceMouse
+            </button>
           )}
         </div>
       </div>

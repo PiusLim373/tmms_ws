@@ -1,4 +1,4 @@
-FROM --platform=linux/arm64 node:22-slim AS build
+FROM node:22-slim AS build
 
 WORKDIR /app
 COPY app/tmms_ui/package.json app/tmms_ui/package-lock.json ./
@@ -6,7 +6,7 @@ RUN npm ci
 COPY app/tmms_ui/ ./
 RUN npm run build
 
-FROM --platform=linux/arm64 node:22-slim
+FROM node:22-slim
 
 ENV NODE_ENV=production
 WORKDIR /app

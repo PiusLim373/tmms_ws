@@ -5,7 +5,7 @@ import { VideoExportModal } from './ui/VideoExportModal'
 // else -- pasted into Lichtblick's Remote file dialog, or navigated to
 // directly for a download -- so they must resolve correctly regardless
 // of how the operator reached tmms_ui (localhost, LAN IP, hostname).
-const bagFileUrl = (filename) => `http://${window.location.hostname}:3001/api/bags/${filename}`
+const bagFileUrl = (filename) => `${window.location.protocol}//${window.location.hostname}:3001/api/bags/${filename}`
 
 function formatBytes(bytes) {
   const mb = bytes / (1024 * 1024)
