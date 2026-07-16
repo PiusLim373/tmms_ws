@@ -1,0 +1,8 @@
+services:
+  tmms_lichtblick:
+    image: lichtblick:1.27.1-arm64
+    container_name: tmms_lichtblick
+    ports:
+      - "8080:8080"
+    volumes:
+      - /home/unitree/.htxgrrt/bin/tmms_lichtblick/tmms_lichtblick_layout.json:/lichtblick/default-layout.json

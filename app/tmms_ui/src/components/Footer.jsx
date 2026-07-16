@@ -1,6 +1,6 @@
 import { callService } from '../services/rosbridge'
 
-export function Footer({ connected }) {
+export function Footer({ connected, page, onNavigate }) {
   function handleEstop() {
     callService(
       '/quadruped_controller/quadruped_cmd',
@@ -12,13 +12,26 @@ export function Footer({ connected }) {
 
   return (
     <footer
-      className="flex items-center justify-center flex-shrink-0"
+      className="flex items-center flex-shrink-0"
       style={{
         height: 58,
         background: 'var(--panel-bg)',
         borderTop: '1px solid var(--border)',
+        padding: '0 16px',
       }}
     >
+      {/* Left: page nav */}
+      <div className="flex items-center" style={{ flex: 1 }}>
+        <button
+          onClick={onNavigate}
+          className="btn-icon"
+          style={{ padding: '8px 16px', fontSize: 12 }}
+        >
+          {page === 'dashboard' ? '🎬 Recordings' : '◂ Dashboard'}
+        </button>
+      </div>
+
+      {/* Center: ESTOP */}
       <button
         onClick={handleEstop}
         className="flex items-center gap-2 rounded font-medium"
@@ -40,6 +53,9 @@ export function Footer({ connected }) {
         <span style={{ fontSize: 15 }}>⚠</span>
         ESTOP — ALL MOTORS DAMP
       </button>
+
+      {/* Right: spacer to balance left nav, keeps ESTOP centered */}
+      <div style={{ flex: 1 }} />
     </footer>
   )
 }

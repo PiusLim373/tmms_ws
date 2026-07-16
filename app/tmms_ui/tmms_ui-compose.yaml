@@ -1,6 +1,6 @@
 services:
   tmms_ui:
-    image: tmms_ui_image:0.1.0
+    image: tmms_ui_image:0.1.1
     platform: linux/arm64
     container_name: tmms_ui
     # Same host networking as tmms_build so it can reach rosbridge (e.g. ws://localhost:9090)
@@ -9,3 +9,9 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
+    volumes:
+      - /home/unitree/.htxgrrt/bags/rosbags:/home/htxgrrt/.htxgrrt/bags/rosbags:ro
+      # Optinal
+      # - /home/unitree/.htxgrrt/bin/tmms_ui/dist:/app/dist:ro
+      # - /home/unitree/.htxgrrt/bin/tmms_ui/ui_backend.js:/app/ui_backend.js:ro
+      # - /home/unitree/.htxgrrt/bin/tmms_ui/scripts:/app/scripts:ro

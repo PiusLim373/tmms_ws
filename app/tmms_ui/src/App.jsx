@@ -8,9 +8,11 @@ import { ThirdPersonWidget } from './components/widgets/ThirdPersonWidget'
 import { QuadrupedWidget } from './components/widgets/QuadrupedWidget'
 import { Z1ArmWidget } from './components/widgets/Z1ArmWidget'
 import { ResizeHandle } from './components/ui/ResizeHandle'
+import { RecordingsPage } from './components/RecordingsPage'
 
 export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
+  const [page, setPage] = useState('dashboard')
 
   useEffect(() => {
     document.documentElement.className = theme === 'light' ? 'light' : ''
@@ -57,6 +59,8 @@ export default function App() {
           overflow: 'hidden',
         }}
       >
+        {page === 'dashboard' && (
+        <>
         {/* ── Camera row ── */}
         <div
           ref={camRowRef}
@@ -130,10 +134,18 @@ export default function App() {
             <QuadrupedWidget heldKeys={heldKeys} />
           </div>
         </div>
+        </>
+        )}
+
+        {page === 'recordings' && <RecordingsPage />}
       </div>
 
       {/* ── Footer (40px) ── */}
-      <Footer connected={connected} />
+      <Footer
+        connected={connected}
+        page={page}
+        onNavigate={() => setPage((p) => (p === 'dashboard' ? 'recordings' : 'dashboard'))}
+      />
     </div>
   )
 }
