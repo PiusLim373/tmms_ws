@@ -13,7 +13,9 @@ TOPICS = [
     '/lf/sportmodestate',
     '/lf/odommodestate',
     '/lf/lowstate',
-    
+    # '/dog_odom',
+    # '/dog_imu_raw',
+    # '/rslidar_points'
 ]
 
 _DEFAULT_BAG_DIR = os.path.join(

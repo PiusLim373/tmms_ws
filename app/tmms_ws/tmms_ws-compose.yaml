@@ -1,10 +1,8 @@
-version: "3.9"
-
 services:
   tmms_run:
     image: tmms_image:0.1.1
     container_name: tmms_run
-    entrypoint: ["/home/htxgrrt/.htxgrrt/bin/tmms_ws/entrypoint.sh"]
+    entrypoint: ["/home/htxgrrt/.htxgrrt/bin/tmms_ws/tmms_ws_entrypoint.sh"]
     # Enable all port forwarding
     network_mode: "host"
     # Allow USB, LIDAR, or other devices access
@@ -26,6 +24,6 @@ services:
       - /home/unitree/.htxgrrt/bin/tmms_ws/install:/home/htxgrrt/.htxgrrt/bin/tmms_ws/install
       # - /home/unitree/.htxgrrt/bin/tmms_ws/build:/home/htxgrrt/.htxgrrt/bin/tmms_ws/build
       # - /home/unitree/.htxgrrt/bin/tmms_ws/src:/home/htxgrrt/.htxgrrt/bin/tmms_ws/src
-      - /home/unitree/.htxgrrt/bin/tmms_ws/entrypoint.sh:/home/htxgrrt/.htxgrrt/bin/tmms_ws/entrypoint.sh
+      - /home/unitree/.htxgrrt/bin/tmms_ws/tmms_ws_entrypoint.sh:/home/htxgrrt/.htxgrrt/bin/tmms_ws/tmms_ws_entrypoint.sh
       - /home/unitree/.htxgrrt/bin/tmms_ws/custom.env:/home/htxgrrt/.htxgrrt/bin/tmms_ws/custom.env
       - /home/unitree/.htxgrrt/bin/tmms_ws/cyclonedds.xml:/home/htxgrrt/.htxgrrt/bin/tmms_ws/cyclonedds.xml
