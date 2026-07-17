@@ -39,6 +39,7 @@ QuadrupedController::QuadrupedController()
   main_status_timer_ = create_wall_timer(
     200ms, std::bind(&QuadrupedController::mainStatusTimerCallback, this));
 
+  RCLCPP_INFO(get_logger(), "hello from here");
   RCLCPP_INFO(get_logger(), "Quadruped Controller node started");
 }
 
