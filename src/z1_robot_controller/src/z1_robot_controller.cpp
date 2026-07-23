@@ -37,7 +37,6 @@ Z1RobotController::Z1RobotController()
     10ms, std::bind(&Z1RobotController::armTimerCallback, this));
 
   RCLCPP_INFO(get_logger(), "Z1 Robot Controller node started");
-  RCLCPP_INFO(get_logger(), "we are live");
 }
 
 Z1RobotController::~Z1RobotController()
