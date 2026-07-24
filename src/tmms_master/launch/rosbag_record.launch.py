@@ -13,8 +13,14 @@ TOPICS = [
     '/lf/sportmodestate',
     '/lf/odommodestate',
     '/lf/lowstate',
-    # '/dog_odom',
-    # '/dog_imu_raw',
+    'api/sport/request',
+    'api/sport/response',
+    '/api/motion_switcher/request',
+    '/api/motion_switcher/response',
+    '/dog_odom',
+    '/dog_imu_raw',
+    '/consolidated_quadruped_cmd_vel',
+    '/consolidated_z1_cmd_vel'
     # '/rslidar_points'
 ]
 
@@ -33,7 +39,7 @@ def generate_launch_description():
             'ros2', 'bag', 'record',
             '-o', LaunchConfiguration('output'),
             '--storage', 'mcap',
-            '--max-bag-size', str(200 * 1024 * 1024),
+            '--max-bag-size', str(300 * 1024 * 1024),
             *TOPICS,
         ],
         output='screen')

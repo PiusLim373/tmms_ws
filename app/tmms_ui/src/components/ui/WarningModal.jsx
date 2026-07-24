@@ -3,6 +3,8 @@ const TRANSITION_MESSAGES = {
   '2→3': { title: 'Entering locomotion mode', body: 'Keep personnel clear of movement path. Robot will begin walking.' },
   '3→2': { title: 'Robot will stop locomotion', body: 'Robot will lock joints and stop walking.' },
   '2→1': { title: 'Robot will sit down', body: 'Ensure ground is clear below the robot.' },
+  '3→4': { title: 'Robot will bend down', body: 'Robot will lower its body and pitch forward. Keep hands and objects clear of the front of the robot.' },
+  '4→3': { title: 'Robot will return to walk', body: 'Robot will resume balanced standing height before locomotion resumes.' },
 }
 
 export function WarningModal({ open, fromMode, toMode, onConfirm, onCancel }) {
@@ -11,7 +13,7 @@ export function WarningModal({ open, fromMode, toMode, onConfirm, onCancel }) {
   const key = `${fromMode}→${toMode}`
   const msg = TRANSITION_MESSAGES[key] ?? { title: 'Mode change', body: 'Keep the area clear.' }
 
-  const MODE_LABELS = { 1: 'SIT', 2: 'STAND LOCK', 3: 'WALK' }
+  const MODE_LABELS = { 1: 'SIT', 2: 'STAND LOCK', 3: 'WALK', 4: 'BEND DOWN' }
 
   return (
     <div

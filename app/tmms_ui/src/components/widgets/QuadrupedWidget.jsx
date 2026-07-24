@@ -9,8 +9,9 @@ import { WarningModal } from '../ui/WarningModal'
 import { Toast } from '../ui/Toast'
 
 const SPEED_MAP = { LOW: 0.2, MID: 0.4, HIGH: 0.7 }
+const ROTATION_SPEED_MAP = { LOW: 0.4, MID: 0.7, HIGH: 1.0 }
 
-const MODE_SERVICE_CMD = { 1: 'stand_down', 2: 'stand_up', 3: 'balance_stand' }
+const MODE_SERVICE_CMD = { 1: 'stand_down', 2: 'stand_up', 3: 'balance_stand', 4: 'bend_down' }
 
 // Real robot_mode string (from quadruped_main_status) -> GearShift's numeric mode id
 // "locomotion" is a transitional state seen during *any* mode switch (not just entering
@@ -28,13 +29,14 @@ export function QuadrupedWidget({ heldKeys }) {
   // resulting display/gating, unchanged from the native-driver behavior).
   useGamepad()
 
-  const [speedLevel, setSpeedLevel] = useState('MID')
+  const [speedLevel, setSpeedLevel] = useState('LOW')
   const [modalOpen, setModalOpen]   = useState(false)
   const [pendingMode, setPendingMode] = useState(null)
   const [serviceStatus, setServiceStatus] = useState({ loading: false, lastResult: null })
   const [joyDisplay, setJoyDisplay] = useState({ x: 0, y: 0, yaw: 0 })
 
-  const speed = SPEED_MAP[speedLevel]
+  const linearSpeed = SPEED_MAP[speedLevel]
+  const rotSpeed = ROTATION_SPEED_MAP[speedLevel]
 
   // isMovingRef doubles as edge-detection (read as "was moving" before each update) and as
   // the live state the 4Hz repeat-publish interval below checks.
@@ -51,11 +53,26 @@ export function QuadrupedWidget({ heldKeys }) {
   // Ground truth from the robot, not an optimistic local guess.
   // "locomotion" carries no new information (it's transitional across any mode
   // switch), so hold onto the last resolved stage instead of re-mapping it.
+  //
+  // "pose" is ambiguous: the robot reports it both while actually bent down and
+  // (per unconfirmed hardware observation) possibly still after cycling back to
+  // Walk. Until that's root-caused, fall back to the last gear the operator
+  // actually clicked to disambiguate — defaulting to the safer Bend Down when
+  // there's no click to trust yet (e.g. right after a page load).
   const [resolvedMode, setResolvedMode] = useState(undefined)
+  const [modeUncertain, setModeUncertain] = useState(false)
+  const lastCommandedGearRef = useRef(undefined)
   useEffect(() => {
     if (!statusActive) return
     const raw = statusMsg?.robot_mode
     if (raw === 'locomotion') return
+    if (raw === 'pose') {
+      const last = lastCommandedGearRef.current
+      setResolvedMode(last === 3 || last === 4 ? last : 4)
+      setModeUncertain(last !== 4)
+      return
+    }
+    setModeUncertain(false)
     setResolvedMode(MODE_FROM_STRING[raw])
   }, [statusActive, statusMsg])
 
@@ -105,15 +122,15 @@ export function QuadrupedWidget({ heldKeys }) {
 
     let lx = 0, ly = 0, az = 0
 
-    if (heldKeys.has('ArrowUp'))   lx += speed
-    if (heldKeys.has('ArrowDown')) lx -= speed
+    if (heldKeys.has('ArrowUp'))   lx += linearSpeed
+    if (heldKeys.has('ArrowDown')) lx -= linearSpeed
 
     if (!shift) {
-      if (heldKeys.has('ArrowLeft'))  ly += speed
-      if (heldKeys.has('ArrowRight')) ly -= speed
+      if (heldKeys.has('ArrowLeft'))  ly += linearSpeed
+      if (heldKeys.has('ArrowRight')) ly -= linearSpeed
     } else {
-      if (heldKeys.has('ArrowLeft'))  az += speed
-      if (heldKeys.has('ArrowRight')) az -= speed
+      if (heldKeys.has('ArrowLeft'))  az += rotSpeed
+      if (heldKeys.has('ArrowRight')) az -= rotSpeed
     }
 
     const isMoving = lx !== 0 || ly !== 0 || az !== 0
@@ -128,7 +145,7 @@ export function QuadrupedWidget({ heldKeys }) {
     }
 
     setJoyDisplay(isWalkMode ? { x: lx, y: ly, yaw: az } : { x: 0, y: 0, yaw: 0 })
-  }, [heldKeys, isWalkMode, speedLevel, joyActive, speed, sendCmdVel])
+  }, [heldKeys, isWalkMode, speedLevel, joyActive, linearSpeed, rotSpeed, sendCmdVel])
 
   // Repeat-publish at 4Hz while a key is held or the joystick is pinned at a nonzero
   // deflection — otherwise the backend has no way to tell the UI is still connected
@@ -179,6 +196,7 @@ export function QuadrupedWidget({ heldKeys }) {
 
   function confirmModeChange() {
     const cmd = MODE_SERVICE_CMD[pendingMode]
+    lastCommandedGearRef.current = pendingMode
     setModalOpen(false)
     setServiceStatus({ loading: true, lastResult: null })
     callService(
@@ -256,6 +274,7 @@ export function QuadrupedWidget({ heldKeys }) {
                   mode={actualMode}
                   onModeChange={requestModeChange}
                   disabled={serviceStatus.loading || joyActive}
+                  uncertain={modeUncertain}
                 />
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -311,7 +330,7 @@ export function QuadrupedWidget({ heldKeys }) {
               label="TRANSLATION"
               hints={JOY_HINTS}
               size={200}
-              maxValue={speed}
+              maxValue={linearSpeed}
               onChange={!joyActive && isWalkMode ? handleJoyDrag : undefined}
             />
 
@@ -320,7 +339,7 @@ export function QuadrupedWidget({ heldKeys }) {
               value={yawVal}
               orientation="v"
               trackLen={200}
-              maxValue={speed}
+              maxValue={rotSpeed}
               onChange={!joyActive && isWalkMode ? handleYawDrag : undefined}
             />
           </div>
