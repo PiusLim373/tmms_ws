@@ -7,6 +7,14 @@ from launch.launch_description_sources import (
     AnyLaunchDescriptionSource, PythonLaunchDescriptionSource)
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
+from os.path import expanduser
+
+# Instead of: "/home/htxgrrt/.htxgrrt/bags/..."
+# Use:
+home_dir = expanduser("~")
+certs_path = os.path.join(home_dir, ".htxgrrt", "certs")
+cert_file = os.path.join(certs_path, "tmms_b2.crt")
+cert_key = os.path.join(certs_path, "tmms_b2.key")
 
 _Z1_CTRL_BIN_BY_ARCH = {
     'aarch64': 'z1_ctrl_arm64',
@@ -69,8 +77,8 @@ def generate_launch_description():
                     ]),
                     launch_arguments={
                         'ssl': 'true',
-                        'certfile': '/home/htxgrrt/.htxgrrt/certs/tmms_b2.crt',
-                        'keyfile': '/home/htxgrrt/.htxgrrt/certs/tmms_b2.key',
+                        'certfile': cert_file,
+                        'keyfile': cert_key,
                     }.items()),
 
                 # Rosbag recording (cameras + quadruped status)

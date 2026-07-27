@@ -4,6 +4,12 @@ from datetime import datetime
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.substitutions import LaunchConfiguration
+from os.path import expanduser
+
+# Instead of: "/home/htxgrrt/.htxgrrt/bags/..."
+# Use:
+home_dir = expanduser("~")
+bag_path = os.path.join(home_dir, ".htxgrrt", "bags", "ongoing_rosbags")
 
 TOPICS = [
     '/topdown_cam/compressed',
@@ -17,7 +23,7 @@ TOPICS = [
 ]
 
 _DEFAULT_BAG_DIR = os.path.join(
-    '/home/htxgrrt/.htxgrrt/bags/ongoing_rosbags',
+    bag_path,
     'tmms_' + datetime.now().strftime('%Y_%m_%d-%H_%M_%S'))
 
 
