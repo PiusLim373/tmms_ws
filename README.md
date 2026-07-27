@@ -59,6 +59,15 @@ Required for ROS2 to pick up the custom CycloneDDS 0.10.x build:
 ros2 daemon stop && ros2 daemon start
 ```
 
+### 6. Install the rosbridge suite
+
+Required for launching of operation.launch.py
+
+```bash
+sudo apt update
+sudo apt install ros_jazzy_rosbridge-suite
+```
+
 ## Run
 
 ```bash
