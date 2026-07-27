@@ -5,7 +5,9 @@ from launch import LaunchDescription
 from launch.actions import ExecuteProcess, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import (
     AnyLaunchDescriptionSource, PythonLaunchDescriptionSource)
+from launch.substitutions import Command
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 
 _Z1_CTRL_BIN_BY_ARCH = {
@@ -30,7 +32,19 @@ def generate_launch_description():
     existing_ld = os.environ.get('LD_LIBRARY_PATH', '')
     new_ld = f'{z1_lib_dir}:{existing_ld}' if existing_ld else z1_lib_dir
 
+    description_share = get_package_share_directory('tmms_description')
+    urdf_path = os.path.join(description_share, 'urdf', 'tmms_description.urdf')
+    robot_description = ParameterValue(Command(['cat ', urdf_path]), value_type=str)
+
     return LaunchDescription([
+        # Publishes robot_description + TF for the URDF's kinematic tree from
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            name='robot_state_publisher',
+            output='screen',
+            parameters=[{'robot_description': robot_description}]),
+
         # Standalone z1_ctrl UDP service — NOT a ROS node
         # runs from z1_ctrl_bin/ so ../config/ resolves to config/
         ExecuteProcess(

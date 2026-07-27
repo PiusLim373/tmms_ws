@@ -13,14 +13,17 @@ TOPICS = [
     '/lf/sportmodestate',
     '/lf/odommodestate',
     '/lf/lowstate',
-    'api/sport/request',
-    'api/sport/response',
+    '/api/sport/request',
+    '/api/sport/response',
     '/api/motion_switcher/request',
     '/api/motion_switcher/response',
     '/dog_odom',
     '/dog_imu_raw',
     '/consolidated_quadruped_cmd_vel',
-    '/consolidated_z1_cmd_vel'
+    '/consolidated_z1_cmd_vel',
+    '/tf',
+    '/tf_static',
+    '/joint_states',
     # '/rslidar_points'
 ]
 

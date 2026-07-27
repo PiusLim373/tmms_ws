@@ -1,13 +1,31 @@
 #include "quadruped_controller/quadruped_controller.hpp"
 
+#include <array>
 #include <cmath>
 
+#include "tf2/LinearMath/Matrix3x3.h"
+#include "tf2/LinearMath/Quaternion.h"
+
 using namespace std::chrono_literals;
+
+namespace
+{
+// Unitree's standard motor_state ordering for the first 12 (leg) actuators,
+// matching tmms_description.urdf's joint names.
+const std::array<std::string, 12> kJointNames = {
+  "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
+  "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
+  "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
+  "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
+};
+}  // namespace
 
 QuadrupedController::QuadrupedController()
 : Node("quadruped_controller"),
   sport_req_(this)
 {
+  tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+
   joy_sub_ = create_subscription<sensor_msgs::msg::Joy>(
     "/joy", 10,
     std::bind(&QuadrupedController::joyCallback, this, std::placeholders::_1));
@@ -26,6 +44,13 @@ QuadrupedController::QuadrupedController()
   low_state_sub_ = create_subscription<unitree_go::msg::LowState>(
     "lf/lowstate", 10,
     std::bind(&QuadrupedController::lowStateCallback, this, std::placeholders::_1));
+
+  dog_odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+    "/dog_odom", 10,
+    std::bind(&QuadrupedController::dogOdomCallback, this, std::placeholders::_1));
+
+  joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
+    "/joint_states", 10);
 
   main_status_pub_ = create_publisher<tmms_msgs::msg::QuadrupedMainStatus>(
     "quadruped_main_status", 10);
@@ -120,12 +145,79 @@ void QuadrupedController::sportStateCallback(
   pose_.orientation.x = msg->imu_state.quaternion[1];
   pose_.orientation.y = msg->imu_state.quaternion[2];
   pose_.orientation.z = msg->imu_state.quaternion[3];
+
+  // base_footprint -> base_link carries only the body's height/tilt above the
+  // flat ground plane; base_footprint's own planar pose comes from /dog_odom
+  // (see dogOdomCallback), so yaw is intentionally dropped here.
+  tf2::Quaternion body_q(
+    msg->imu_state.quaternion[1], msg->imu_state.quaternion[2],
+    msg->imu_state.quaternion[3], msg->imu_state.quaternion[0]);
+  double roll, pitch, yaw;
+  tf2::Matrix3x3(body_q).getRPY(roll, pitch, yaw);
+
+  tf2::Quaternion tilt_q;
+  tilt_q.setRPY(roll, pitch, 0.0);
+
+  geometry_msgs::msg::TransformStamped t;
+  t.header.stamp = this->now();
+  t.header.frame_id = "base_footprint";
+  t.child_frame_id = "base_link";
+  t.transform.translation.x = 0.0;
+  t.transform.translation.y = 0.0;
+  t.transform.translation.z = msg->body_height;
+  t.transform.rotation.x = tilt_q.x();
+  t.transform.rotation.y = tilt_q.y();
+  t.transform.rotation.z = tilt_q.z();
+  t.transform.rotation.w = tilt_q.w();
+  tf_broadcaster_->sendTransform(t);
 }
 
 void QuadrupedController::lowStateCallback(
   const unitree_go::msg::LowState::SharedPtr msg)
 {
   battery_soc_ = msg->bms_state.soc;
+
+  sensor_msgs::msg::JointState joint_state;
+  joint_state.header.stamp = this->now();
+  joint_state.name.assign(kJointNames.begin(), kJointNames.end());
+  joint_state.position.resize(kJointNames.size());
+  joint_state.velocity.resize(kJointNames.size());
+  joint_state.effort.resize(kJointNames.size());
+  for (size_t i = 0; i < kJointNames.size(); ++i) {
+    joint_state.position[i] = msg->motor_state[i].q;
+    joint_state.velocity[i] = msg->motor_state[i].dq;
+    joint_state.effort[i] = msg->motor_state[i].tau_est;
+  }
+  joint_state_pub_->publish(joint_state);
+}
+
+void QuadrupedController::dogOdomCallback(
+  const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+  // odom -> base_footprint carries only the planar (x, y, yaw) pose; height
+  // and tilt are applied separately in base_footprint -> base_link (see
+  // sportStateCallback), keeping base_footprint flat for Nav2/RTAB-Map.
+  tf2::Quaternion odom_q(
+    msg->pose.pose.orientation.x, msg->pose.pose.orientation.y,
+    msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
+  double roll, pitch, yaw;
+  tf2::Matrix3x3(odom_q).getRPY(roll, pitch, yaw);
+
+  tf2::Quaternion yaw_q;
+  yaw_q.setRPY(0.0, 0.0, yaw);
+
+  geometry_msgs::msg::TransformStamped t;
+  t.header.stamp = msg->header.stamp;
+  t.header.frame_id = "odom";
+  t.child_frame_id = "base_footprint";
+  t.transform.translation.x = msg->pose.pose.position.x;
+  t.transform.translation.y = msg->pose.pose.position.y;
+  t.transform.translation.z = 0.0;
+  t.transform.rotation.x = yaw_q.x();
+  t.transform.rotation.y = yaw_q.y();
+  t.transform.rotation.z = yaw_q.z();
+  t.transform.rotation.w = yaw_q.w();
+  tf_broadcaster_->sendTransform(t);
 }
 
 void QuadrupedController::mainStatusTimerCallback()
