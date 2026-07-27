@@ -1,6 +1,7 @@
-// Order top→bottom: WALK(3) → STAND LOCK(2) → SIT(1)
+// Order top→bottom: BEND DOWN(4) → WALK(3) → STAND LOCK(2) → SIT(1)
 // User clicks ▲/▼ arrows to cycle modes. Mode labels are display-only.
 const MODES = [
+  { mode: 4, label: 'BEND\nDOWN' },
   { mode: 3, label: 'WALK' },
   { mode: 2, label: 'STAND\nLOCK' },
   { mode: 1, label: 'SIT' },
@@ -41,7 +42,7 @@ const arrowBtn = (disabled, label, onClick) => (
   </button>
 )
 
-export function GearShift({ mode, onModeChange, disabled }) {
+export function GearShift({ mode, onModeChange, disabled, uncertain }) {
   return (
     <div className="flex flex-col gap-1" style={{ width: '100%' }}>
       <span
@@ -56,7 +57,7 @@ export function GearShift({ mode, onModeChange, disabled }) {
         ROBOT MODE
       </span>
 
-      {arrowBtn(disabled || mode >= 3, '▲', () => onModeChange(mode + 1))}
+      {arrowBtn(disabled || mode >= 4, '▲', () => onModeChange(mode + 1))}
 
       {MODES.map((m) => {
         const isActive = mode === m.mode
@@ -64,6 +65,7 @@ export function GearShift({ mode, onModeChange, disabled }) {
           <div
             key={m.mode}
             style={{
+              position: 'relative',
               width: '100%',
               padding: '10px 14px',
               fontFamily: 'var(--font-mono)',
@@ -82,6 +84,20 @@ export function GearShift({ mode, onModeChange, disabled }) {
               userSelect: 'none',
             }}
           >
+            {isActive && uncertain && (
+              <span
+                title="Mode inferred from last command — robot feedback still reports 'pose'"
+                style={{
+                  position: 'absolute',
+                  top: 4,
+                  right: 6,
+                  fontSize: 10,
+                  color: '#F59E0B',
+                }}
+              >
+                ⚠
+              </span>
+            )}
             <span
               style={{
                 fontSize: 9,

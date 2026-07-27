@@ -16,7 +16,7 @@ find_package(tmms_msgs REQUIRED)
 add_executable(quadruped_controller_node
   src/quadruped_controller_node.cpp
   src/quadruped_controller.cpp
-  src/common/ros2_b2_sport_client.cpp
+  src/common/ros2_sport_client.cpp
   src/common/motor_crc.cpp)
 
 target_include_directories(quadruped_controller_node PUBLIC
