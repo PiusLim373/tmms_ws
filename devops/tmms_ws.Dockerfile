@@ -26,8 +26,12 @@ RUN apt-get update && \
     iputils-ping \
     iproute2 \
     lsof \
-    ros-jazzy-rosbridge-suite
+    ros-jazzy-rosbridge-suite \
+    ros-jazzy-rtabmap-ros
 
+RUN apt-get install -y \
+    ros-jazzy-librealsense2* \
+    ros-jazzy-realsense2-*
 
 # Setup ROS environment
 SHELL ["/bin/bash", "-c"]

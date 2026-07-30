@@ -7,11 +7,16 @@ const TRANSITION_MESSAGES = {
   '4→3': { title: 'Robot will return to walk', body: 'Robot will resume balanced standing height before locomotion resumes.' },
 }
 
-export function WarningModal({ open, fromMode, toMode, onConfirm, onCancel }) {
+export function WarningModal({ open, fromMode, toMode, title, body, onConfirm, onCancel }) {
   if (!open) return null
 
+  // Custom title/body (e.g. map-overwrite confirmations) bypass the
+  // fromMode/toMode transition lookup entirely.
+  const isCustom = title != null || body != null
   const key = `${fromMode}→${toMode}`
-  const msg = TRANSITION_MESSAGES[key] ?? { title: 'Mode change', body: 'Keep the area clear.' }
+  const msg = isCustom
+    ? { title: title ?? 'Confirm', body: body ?? '' }
+    : (TRANSITION_MESSAGES[key] ?? { title: 'Mode change', body: 'Keep the area clear.' })
 
   const MODE_LABELS = { 1: 'SIT', 2: 'STAND LOCK', 3: 'WALK', 4: 'BEND DOWN' }
 
@@ -46,15 +51,17 @@ export function WarningModal({ open, fromMode, toMode, onConfirm, onCancel }) {
         </div>
 
         {/* Transition label */}
-        <div
-          style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: 13,
-            color: 'var(--text-h)',
-          }}
-        >
-          {MODE_LABELS[fromMode]} → {MODE_LABELS[toMode]}
-        </div>
+        {!isCustom && (
+          <div
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: 13,
+              color: 'var(--text-h)',
+            }}
+          >
+            {MODE_LABELS[fromMode]} → {MODE_LABELS[toMode]}
+          </div>
+        )}
 
         {/* Message */}
         <div style={{ fontSize: 13, color: 'var(--text)' }}>

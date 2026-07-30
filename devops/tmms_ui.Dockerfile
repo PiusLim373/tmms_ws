@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV TMMS_PYTHON_BIN=/opt/tmms_venv/bin/python3
 ENV TMMS_BAGS_DIR=/home/htxgrrt/.htxgrrt/bags/rosbags
+ENV TMMS_MAPS_DIR=/home/htxgrrt/.htxgrrt/maps
 
 COPY app/tmms_ui/package.json app/tmms_ui/package-lock.json ./
 RUN npm ci --omit=dev
@@ -26,6 +27,9 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY app/tmms_ui/ui_backend.js ./
 COPY app/tmms_ui/scripts ./scripts
+
+RUN chown -R node:node /app
+USER node
 
 EXPOSE 3001
 CMD ["node", "ui_backend.js"]

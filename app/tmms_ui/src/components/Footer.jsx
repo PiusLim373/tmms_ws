@@ -21,13 +21,39 @@ export function Footer({ connected, page, onNavigate }) {
       }}
     >
       {/* Left: page nav */}
-      <div className="flex items-center" style={{ flex: 1 }}>
+      <div className="flex items-center gap-2" style={{ flex: 1 }}>
         <button
-          onClick={onNavigate}
+          onClick={() => onNavigate('dashboard')}
           className="btn-icon"
-          style={{ padding: '8px 16px', fontSize: 12 }}
+          style={{
+            padding: '8px 16px',
+            fontSize: 12,
+            ...(page === 'dashboard' && { borderColor: 'var(--accent-bright)' }),
+          }}
         >
-          {page === 'dashboard' ? '🎬 Recordings' : '◂ Dashboard'}
+          ◂ Dashboard
+        </button>
+        <button
+          onClick={() => onNavigate('recordings')}
+          className="btn-icon"
+          style={{
+            padding: '8px 16px',
+            fontSize: 12,
+            ...(page === 'recordings' && { borderColor: 'var(--accent-bright)' }),
+          }}
+        >
+          🎬 Recordings
+        </button>
+        <button
+          onClick={() => onNavigate('mapping')}
+          className="btn-icon"
+          style={{
+            padding: '8px 16px',
+            fontSize: 12,
+            ...(page === 'mapping' && { borderColor: 'var(--accent-bright)' }),
+          }}
+        >
+          🗺️ Mapping
         </button>
       </div>
 
