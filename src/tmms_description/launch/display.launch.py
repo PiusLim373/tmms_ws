@@ -9,11 +9,11 @@ from launch.substitutions import Command
 
 def generate_launch_description():
     pkg_share = get_package_share_directory('tmms_description')
-    urdf_path = os.path.join(pkg_share, 'urdf', 'tmms_description.urdf')
+    urdf_path = os.path.join(pkg_share, 'urdf', 'tmms_description.urdf.xacro')
     rviz_config_path = os.path.join(pkg_share, 'config', 'config.rviz')
 
     robot_description = ParameterValue(
-        Command(['cat ', urdf_path]), value_type=str)
+        Command(['xacro ', urdf_path]), value_type=str)
 
     return LaunchDescription([
         Node(

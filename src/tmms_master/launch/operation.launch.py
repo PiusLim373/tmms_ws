@@ -33,13 +33,13 @@ def generate_launch_description():
     new_ld = f'{z1_lib_dir}:{existing_ld}' if existing_ld else z1_lib_dir
 
     description_share = get_package_share_directory('tmms_description')
-    urdf_path = os.path.join(description_share, 'urdf', 'tmms_description.urdf')
-    robot_description = ParameterValue(Command(['cat ', urdf_path]), value_type=str)
+    urdf_path = os.path.join(description_share, 'urdf', 'tmms_description.urdf.xacro')
+    robot_description = ParameterValue(Command(['xacro ', urdf_path]), value_type=str)
 
     # RTAB-Map tuning: point-to-plane ICP registration + ground/ceiling height
     # filtering so the 3D lidar's floor and roof returns aren't mapped as obstacles.
     rtabmap_args = (
-        '--Reg/Strategy 1 --Grid/Sensor 0 '
+        '--Reg/Strategy 1 --Grid/Sensor 2 '
         '--Icp/PointToPlane true --Icp/VoxelSize 0.1 --Icp/Iterations 10 '
         '--Icp/MaxCorrespondenceDistance 0.1 '
         '--Grid/MinGroundHeight -0.1 --Grid/MaxGroundHeight 0.1 '
@@ -96,6 +96,8 @@ def generate_launch_description():
                         'ssl': 'true',
                         'certfile': '/home/htxgrrt/.htxgrrt/certs/tmms_b2.crt',
                         'keyfile': '/home/htxgrrt/.htxgrrt/certs/tmms_b2.key',
+                        'max_message_size': '50000000',
+                        'use_compression': 'true',
                     }.items()),
 
                 # Rosbag recording (cameras + quadruped status)

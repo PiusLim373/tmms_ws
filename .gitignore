@@ -54,3 +54,5 @@ log/
 *.tar.gz
 
 app/tmms_recordings/
+
+*.key

@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
-<robot name="tmms_description">
+<robot name="tmms_description" xmlns:xacro="http://www.ros.org/wiki/xacro">
   <link name="base_link">
     <inertial>
       <origin xyz="0.000458 0.005261 0.000665" rpy="0 0 0" />
@@ -65,7 +65,7 @@
     <child link="r_dc_link" />
     <axis xyz="0 0 0" />
   </joint>
-  <link name="imu_link">
+  <link name="dog_imu_link">
     <inertial>
       <origin xyz="-2.02E-17 1.73E-17 -1.39E-17" rpy="0 0 0" />
       <mass value="4.19E-15" />
@@ -75,7 +75,7 @@
   <joint name="joint_imu" type="fixed">
     <origin xyz="0 -0.02341 0.04927" rpy="0 0 0" />
     <parent link="base_link" />
-    <child link="imu_link" />
+    <child link="dog_imu_link" />
     <axis xyz="0 0 0" />
   </joint>
   <link name="head_Link">
@@ -826,6 +826,14 @@
     <origin xyz="-0.38451 0 -0.023249" rpy="-1.5708 0 1.5708" />
     <parent link="base_link" />
     <child link="r_oc_link" />
+    <axis xyz="0 0 0" />
+  </joint>
+  <link name="camera_front_link" />
+  <joint name="joint_camera_front" type="fixed">
+    <origin xyz="$(env FRONT_REALSENSE_X) $(env FRONT_REALSENSE_Y) $(env FRONT_REALSENSE_Z)"
+            rpy="$(env FRONT_REALSENSE_ROLL) $(env FRONT_REALSENSE_PITCH) $(env FRONT_REALSENSE_YAW)" />
+    <parent link="rslidar" />
+    <child link="camera_front_link" />
     <axis xyz="0 0 0" />
   </joint>
 </robot>

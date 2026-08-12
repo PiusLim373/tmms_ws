@@ -24,7 +24,11 @@ TOPICS = [
     '/tf',
     '/tf_static',
     '/joint_states',
-    # '/rslidar_points'
+    
+    # '/rslidar_points',
+    # '/camera_front/color/image_raw',
+    # '/camera_front/color/camera_info',
+    # '/camera/camera_front/aligned_depth_to_color/image_raw'
 ]
 
 _DEFAULT_BAG_DIR = os.path.join(
@@ -34,15 +38,15 @@ _DEFAULT_BAG_DIR = os.path.join(
 
 def generate_launch_description():
     output_arg = DeclareLaunchArgument(
-        'output', default_value=_DEFAULT_BAG_DIR,
+        'bag_output_dir', default_value=_DEFAULT_BAG_DIR,
         description='Output directory for the recorded bag')
 
     record_process = ExecuteProcess(
         cmd=[
             'ros2', 'bag', 'record',
-            '-o', LaunchConfiguration('output'),
+            '-o', LaunchConfiguration('bag_output_dir'),
             '--storage', 'mcap',
-            '--max-bag-size', str(300 * 1024 * 1024),
+            '--max-bag-size', str(500 * 1024 * 1024),
             *TOPICS,
         ],
         output='screen')

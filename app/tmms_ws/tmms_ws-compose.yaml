@@ -17,6 +17,7 @@ services:
       - /etc/localtime:/etc/localtime:ro                              # timezone binding
       - /etc/timezone:/etc/timezone:ro                                # timezone binding
       - /home/unitree/.htxgrrt/logs:/home/htxgrrt/.htxgrrt/logs               # logs binding
+      - /home/unitree/.htxgrrt/etc:/home/htxgrrt/.htxgrrt/etc                 # etc binding
       - /home/unitree/.htxgrrt/bags:/home/htxgrrt/.htxgrrt/bags               # rosbags binding
       - /home/unitree/.htxgrrt/maps:/home/htxgrrt/.htxgrrt/maps               # maps binding
       - /home/unitree/.htxgrrt/certs:/home/htxgrrt/.htxgrrt/certs:ro          # certs binding

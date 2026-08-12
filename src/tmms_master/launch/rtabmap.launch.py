@@ -42,8 +42,7 @@ class ConditionalBool(Substitution):
 def launch_setup(context, *args, **kwargs):      
                
     return [
-        DeclareLaunchArgument('depth', default_value='false', description=''),
-        # DeclareLaunchArgument('depth', default_value=ConditionalText('false', 'true', IfCondition(PythonExpression(["'", LaunchConfiguration('stereo'), "' == 'true'"]))._predicate_func(context)), description=''),
+        DeclareLaunchArgument('depth', default_value=ConditionalText('false', 'true', IfCondition(PythonExpression(["'", LaunchConfiguration('stereo'), "' == 'true'"]))._predicate_func(context)), description=''),
         DeclareLaunchArgument('subscribe_rgb', default_value=LaunchConfiguration('depth'), description=''),
         DeclareLaunchArgument('args',  default_value=LaunchConfiguration('rtabmap_args'), description='Can be used to pass RTAB-Map\'s parameters or other flags like --udebug and --delete_db_on_start/-d'),
         DeclareLaunchArgument('sync_queue_size',  default_value=LaunchConfiguration('queue_size'), description='Queue size of topic synchronizers.'),
@@ -437,7 +436,7 @@ def generate_launch_description():
         DeclareLaunchArgument('topic_queue_size', default_value='10',               description='Queue size of individual topic subscribers.'),
         DeclareLaunchArgument('queue_size',     default_value='10',                 description='Backward compatibility, use "sync_queue_size" instead.'),
         DeclareLaunchArgument('qos',            default_value='1',                  description='General QoS used for sensor input data: 0=system default, 1=Reliable, 2=Best Effort.'),
-        DeclareLaunchArgument('wait_for_transform', default_value='0.2',            description=''),
+        DeclareLaunchArgument('wait_for_transform', default_value='5.0',            description=''),
         DeclareLaunchArgument('rtabmap_args',   default_value='',                   description='Backward compatibility, use "args" instead.'),
         DeclareLaunchArgument('launch_prefix',  default_value='',                   description='For debugging purpose, it fills prefix tag of the nodes, e.g., "xterm -e gdb -ex run --args"'),
         DeclareLaunchArgument('output',         default_value='screen',             description='Control node output (screen or log).'),
@@ -453,9 +452,9 @@ def generate_launch_description():
         DeclareLaunchArgument('approx_sync_max_interval',  default_value='0.0', description='(sec) 0 means infinite interval duration (used with approx_sync=true)'),
 
         # RGB-D related topics
-        DeclareLaunchArgument('rgb_topic',           default_value='/d435/image',       description=''),
-        DeclareLaunchArgument('depth_topic',         default_value='/d435/depth_image2', description=''),
-        DeclareLaunchArgument('camera_info_topic',   default_value='/d435/camera_info',            description=''),
+        DeclareLaunchArgument('rgb_topic',           default_value='/camera/camera_front/color/image_raw',       description=''),
+        DeclareLaunchArgument('depth_topic',         default_value='/camera/camera_front/aligned_depth_to_color/image_raw', description=''),
+        DeclareLaunchArgument('camera_info_topic',   default_value='/camera/camera_front/color/camera_info',            description=''),
 
         # Stereo related topics
         DeclareLaunchArgument('stereo_namespace',        default_value='/stereo_camera', description=''),
