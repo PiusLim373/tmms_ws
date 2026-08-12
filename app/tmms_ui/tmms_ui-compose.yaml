@@ -1,6 +1,6 @@
 services:
   tmms_ui:
-    image: tmms_ui_image:0.1.1
+    image: tmms_ui_image:0.1.2
     container_name: tmms_ui
     # Same host networking as tmms_build so it can reach rosbridge (e.g. ws://localhost:9090)
     network_mode: host
@@ -12,8 +12,9 @@ services:
       - TMMS_TLS_KEY=/app/certs/tmms_b2.key
     volumes:
       - /home/unitree/.htxgrrt/bags/rosbags:/home/htxgrrt/.htxgrrt/bags/rosbags:ro
+      - /home/unitree/.htxgrrt/maps:/home/htxgrrt/.htxgrrt/maps
       - /home/unitree/.htxgrrt/certs:/app/certs:ro
-      # Optinal
-      # - /home/unitree/.htxgrrt/bin/tmms_ui/dist:/app/dist:ro
-      # - /home/unitree/.htxgrrt/bin/tmms_ui/ui_backend.js:/app/ui_backend.js:ro
-      # - /home/unitree/.htxgrrt/bin/tmms_ui/scripts:/app/scripts:ro
+      # Optional
+      - /home/unitree/.htxgrrt/bin/tmms_ui/dist:/app/dist:ro
+      - /home/unitree/.htxgrrt/bin/tmms_ui/ui_backend.js:/app/ui_backend.js:ro
+      - /home/unitree/.htxgrrt/bin/tmms_ui/scripts:/app/scripts:ro

@@ -1,12 +1,16 @@
 #ifndef QUADRUPED_CONTROLLER__QUADRUPED_CONTROLLER_HPP_
 #define QUADRUPED_CONTROLLER__QUADRUPED_CONTROLLER_HPP_
 
+#include <memory>
 #include <mutex>
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "sensor_msgs/msg/joy.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
+#include "nav_msgs/msg/odometry.hpp"
 #include "unitree_api/msg/request.hpp"
 #include "unitree_go/msg/sport_mode_state.hpp"
 #include "unitree_go/msg/low_state.hpp"
@@ -14,6 +18,7 @@
 #include "tmms_msgs/srv/pose_trigger.hpp"
 #include "tmms_msgs/srv/float_trigger.hpp"
 #include "tmms_msgs/msg/quadruped_main_status.hpp"
+#include "tf2_ros/transform_broadcaster.h"
 
 #include "ros2_sport_client.h"
 #include "b2/b2_motion_switch_client.hpp"
@@ -29,6 +34,7 @@ private:
   void cmdVelUiCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void sportStateCallback(const unitree_go::msg::SportModeState::SharedPtr msg);
   void lowStateCallback(const unitree_go::msg::LowState::SharedPtr msg);
+  void dogOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
   void moveTimerCallback();
   void poseTimerCallback();
   void mainStatusTimerCallback();
@@ -81,6 +87,8 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr consolidated_pub_;
   rclcpp::Subscription<unitree_go::msg::SportModeState>::SharedPtr sport_state_sub_;
   rclcpp::Subscription<unitree_go::msg::LowState>::SharedPtr low_state_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr dog_odom_sub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
   rclcpp::Publisher<tmms_msgs::msg::QuadrupedMainStatus>::SharedPtr main_status_pub_;
   rclcpp::Service<tmms_msgs::srv::StringTrigger>::SharedPtr quadruped_cmd_srv_;
   rclcpp::Service<tmms_msgs::srv::PoseTrigger>::SharedPtr quadruped_pose_srv_;
@@ -90,6 +98,8 @@ private:
   rclcpp::TimerBase::SharedPtr move_timer_;
   rclcpp::TimerBase::SharedPtr pose_timer_;
   rclcpp::TimerBase::SharedPtr main_status_timer_;
+
+  std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 };
 
 #endif  // QUADRUPED_CONTROLLER__QUADRUPED_CONTROLLER_HPP_

@@ -5,7 +5,9 @@ from launch import LaunchDescription
 from launch.actions import ExecuteProcess, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import (
     AnyLaunchDescriptionSource, PythonLaunchDescriptionSource)
+from launch.substitutions import Command
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 
 _Z1_CTRL_BIN_BY_ARCH = {
@@ -30,7 +32,30 @@ def generate_launch_description():
     existing_ld = os.environ.get('LD_LIBRARY_PATH', '')
     new_ld = f'{z1_lib_dir}:{existing_ld}' if existing_ld else z1_lib_dir
 
+    description_share = get_package_share_directory('tmms_description')
+    urdf_path = os.path.join(description_share, 'urdf', 'tmms_description.urdf.xacro')
+    robot_description = ParameterValue(Command(['xacro ', urdf_path]), value_type=str)
+
+    # RTAB-Map tuning: point-to-plane ICP registration + ground/ceiling height
+    # filtering so the 3D lidar's floor and roof returns aren't mapped as obstacles.
+    rtabmap_args = (
+        '--Reg/Strategy 1 --Grid/Sensor 2 '
+        '--Icp/PointToPlane true --Icp/VoxelSize 0.1 --Icp/Iterations 10 '
+        '--Icp/MaxCorrespondenceDistance 0.1 '
+        '--Grid/MinGroundHeight -0.1 --Grid/MaxGroundHeight 0.1 '
+        '--Grid/MaxObstacleHeight 1.5 --Grid/RangeMin 0.75 '
+        '--Grid/RangeMax 15.0 --Grid/MinClusterSize 20 '
+    )
+
     return LaunchDescription([
+        # Publishes robot_description + TF for the URDF's kinematic tree from
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            name='robot_state_publisher',
+            output='screen',
+            parameters=[{'robot_description': robot_description}]),
+
         # Standalone z1_ctrl UDP service — NOT a ROS node
         # runs from z1_ctrl_bin/ so ../config/ resolves to config/
         ExecuteProcess(
@@ -71,6 +96,8 @@ def generate_launch_description():
                         'ssl': 'true',
                         'certfile': '/home/htxgrrt/.htxgrrt/certs/tmms_b2.crt',
                         'keyfile': '/home/htxgrrt/.htxgrrt/certs/tmms_b2.key',
+                        'max_message_size': '50000000',
+                        'use_compression': 'true',
                     }.items()),
 
                 # Rosbag recording (cameras + quadruped status)
@@ -79,5 +106,15 @@ def generate_launch_description():
                         get_package_share_directory('tmms_master'),
                         '/launch/rosbag_record.launch.py',
                     ])),
+
+                # RTAB-Map SLAM (lidar-based, localization mode by default)
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource([
+                        get_package_share_directory('tmms_master'),
+                        '/launch/rtabmap.launch.py',
+                    ]),
+                    launch_arguments={
+                        'args': rtabmap_args,
+                    }.items()),
             ]),
     ])

@@ -73,21 +73,39 @@ export function subscribeCamera(topicName, callback) {
   return () => topic.unsubscribe()
 }
 
-export function callService(serviceName, data, onResult, onError) {
+// Generic — caller supplies the full request object and service type.
+// roslib v2: callService(request, successCb, errorCb) — successCb receives
+// the response values object directly.
+export function callRosService(serviceName, serviceType, request, onResult, onError) {
   if (!ros.isConnected) {
     onError?.('ROS not connected')
     return
   }
-  const svc = new Service({
-    ros,
-    name: serviceName,
-    serviceType: 'tmms_msgs/StringTrigger',
-  })
-  // roslib v2: callService(request, successCb, errorCb)
-  // successCb receives the response values object directly
+  const svc = new Service({ ros, name: serviceName, serviceType })
   svc.callService(
-    { data },
+    request,
     (result) => onResult?.(result),
     (error)  => onError?.(error)
   )
+}
+
+export function callService(serviceName, data, onResult, onError) {
+  callRosService(serviceName, 'tmms_msgs/StringTrigger', { data }, onResult, onError)
+}
+
+export function loadRtabmapDatabase(databasePath, clear, onResult, onError) {
+  callRosService(
+    '/rtabmap/load_database',
+    'rtabmap_msgs/srv/LoadDatabase',
+    { database_path: databasePath, clear },
+    onResult, onError
+  )
+}
+
+export function setRtabmapModeMapping(onResult, onError) {
+  callRosService('/rtabmap/set_mode_mapping', 'std_srvs/srv/Empty', {}, onResult, onError)
+}
+
+export function setRtabmapModeLocalization(onResult, onError) {
+  callRosService('/rtabmap/set_mode_localization', 'std_srvs/srv/Empty', {}, onResult, onError)
 }

@@ -9,6 +9,7 @@ import { QuadrupedWidget } from './components/widgets/QuadrupedWidget'
 import { Z1ArmWidget } from './components/widgets/Z1ArmWidget'
 import { ResizeHandle } from './components/ui/ResizeHandle'
 import { RecordingsPage } from './components/RecordingsPage'
+import { MappingPage } from './components/MappingPage'
 
 export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
@@ -138,13 +139,15 @@ export default function App() {
         )}
 
         {page === 'recordings' && <RecordingsPage />}
+
+        {page === 'mapping' && <MappingPage />}
       </div>
 
       {/* ── Footer (40px) ── */}
       <Footer
         connected={connected}
         page={page}
-        onNavigate={() => setPage((p) => (p === 'dashboard' ? 'recordings' : 'dashboard'))}
+        onNavigate={setPage}
       />
     </div>
   )

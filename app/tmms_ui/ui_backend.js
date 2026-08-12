@@ -5,6 +5,7 @@ import fs from 'fs'
 import os from 'os'
 import https from 'https'
 import archiver from 'archiver'
+import multer from 'multer'
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 
@@ -27,6 +28,20 @@ const TOPIC_MAP = {
 }
 
 const BAG_FILENAME_RE = /^[\w.-]+\.mcap$/
+
+const MAPS_DIR = process.env.TMMS_MAPS_DIR
+  || path.join(os.homedir(), '.htxgrrt', 'maps')
+fs.mkdirSync(MAPS_DIR, { recursive: true })
+
+const MAP_FILENAME_RE = /^[A-Za-z0-9_]+\.db$/
+const MAP_NAME_RE = /^[A-Za-z0-9_]+$/
+
+// In-memory only — resets to idle on backend/container restart. There is no
+// ROS-native way to query rtabmap's current mapping-vs-localization mode, so
+// this is the single source of truth for "are we mapping right now."
+let mappingState = { mapping: false, mapName: null, startedAt: null }
+
+const mapsUpload = multer({ storage: multer.memoryStorage() })
 
 const app = express()
 
@@ -150,6 +165,100 @@ app.post('/api/bags/:filename/videos', async (req, res) => {
       res.end()
     }
   }
+})
+
+// Open CORS regardless of NODE_ENV, same reasoning as /api/bags above.
+app.use('/api/maps', cors({
+  exposedHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges'],
+}))
+
+app.get('/api/maps', (_req, res) => {
+  const filenames = fs.readdirSync(MAPS_DIR)
+    .filter((f) => f.endsWith('.db'))
+    .sort()
+  const files = filenames.map((filename) => {
+    const stat = fs.statSync(path.join(MAPS_DIR, filename))
+    return { filename, sizeBytes: stat.size, mtime: stat.mtime.toISOString() }
+  })
+  res.json(files)
+})
+
+app.get('/api/maps/:filename', (req, res) => {
+  const filename = req.params.filename
+  if (!MAP_FILENAME_RE.test(filename)) {
+    return res.status(400).end()
+  }
+  if (!fs.existsSync(path.join(MAPS_DIR, filename))) {
+    return res.status(404).json({ error: 'file not found', filename })
+  }
+  res.set('Content-Disposition', `attachment; filename="${filename}"`)
+  res.sendFile(filename, { root: MAPS_DIR })
+})
+
+app.post('/api/maps', mapsUpload.single('file'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'no file uploaded' })
+  }
+  const filename = req.file.originalname
+  if (!MAP_FILENAME_RE.test(filename)) {
+    return res.status(400).json({ error: 'filename must match [A-Za-z0-9_]+.db' })
+  }
+  const destPath = path.join(MAPS_DIR, filename)
+  const overwritten = fs.existsSync(destPath)
+  // Overwrite confirmation is handled client-side (WarningModal) before this
+  // request is ever sent — the backend just executes and reports the result.
+  fs.writeFileSync(destPath, req.file.buffer)
+  res.json({ filename, overwritten })
+})
+
+app.get('/api/mapping-state', (_req, res) => {
+  let lastSavedAgoSeconds = null
+  if (mappingState.mapName) {
+    const dbPath = path.join(MAPS_DIR, `${mappingState.mapName}.db`)
+    if (fs.existsSync(dbPath)) {
+      lastSavedAgoSeconds = Math.floor((Date.now() - fs.statSync(dbPath).mtime.getTime()) / 1000)
+    }
+  }
+  res.json({
+    mapping: mappingState.mapping,
+    mapName: mappingState.mapName,
+    startedAt: mappingState.startedAt,
+    lastSavedAgoSeconds,
+  })
+})
+
+app.post('/api/mapping-state', (req, res) => {
+  const { action, mapName } = req.body || {}
+
+  if (action === 'start') {
+    if (mappingState.mapping) {
+      return res.status(409).json({ error: 'a mapping session is already active', mapName: mappingState.mapName })
+    }
+    if (!mapName || !MAP_NAME_RE.test(mapName)) {
+      return res.status(400).json({ error: 'mapName must match [A-Za-z0-9_]+' })
+    }
+    mappingState = { mapping: true, mapName, startedAt: new Date().toISOString() }
+    return res.json(mappingState)
+  }
+
+  if (action === 'end') {
+    // Keep mapName so "last saved" keeps reading the right file after ending.
+    mappingState = { mapping: false, mapName: mappingState.mapName, startedAt: null }
+    return res.json(mappingState)
+  }
+
+  if (action === 'load') {
+    if (mappingState.mapping) {
+      return res.status(409).json({ error: 'end the current mapping session first' })
+    }
+    if (!mapName || !MAP_NAME_RE.test(mapName)) {
+      return res.status(400).json({ error: 'mapName must match [A-Za-z0-9_]+' })
+    }
+    mappingState = { mapping: false, mapName, startedAt: null }
+    return res.json(mappingState)
+  }
+
+  return res.status(400).json({ error: 'action must be "start", "end", or "load"' })
 })
 
 if (isProd) {

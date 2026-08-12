@@ -22,6 +22,22 @@ const MODE_FROM_STRING = { damping: 1, lie_down: 1, joint_lock: 2, balance_stand
 // JoystickDisplay: x prop = forward/back, y prop = left/right
 const JOY_HINTS = { up: '↑', down: '↓', left: '←', right: '→' }
 
+// motor_state[0..11] order — matches kJointNames in quadruped_controller.cpp
+const JOINT_LABELS = [
+  { leg: 'FR', joint: 'Hip' }, { leg: 'FR', joint: 'Thigh' }, { leg: 'FR', joint: 'Calf' },
+  { leg: 'FL', joint: 'Hip' }, { leg: 'FL', joint: 'Thigh' }, { leg: 'FL', joint: 'Calf' },
+  { leg: 'RR', joint: 'Hip' }, { leg: 'RR', joint: 'Thigh' }, { leg: 'RR', joint: 'Calf' },
+  { leg: 'RL', joint: 'Hip' }, { leg: 'RL', joint: 'Thigh' }, { leg: 'RL', joint: 'Calf' },
+]
+
+// Placeholder thresholds — no documented Unitree B2 joint-motor rating found
+// anywhere in this repo or public docs. Tune once real limits are known.
+function jointTempColor(c) {
+  if (c < 50) return '#22C55E'
+  if (c < 70) return '#F59E0B'
+  return '#EF4444'
+}
+
 export function QuadrupedWidget({ heldKeys }) {
   // Browser-native flight controller capture — publishes directly to /joy,
   // a drop-in replacement for the native joy_node. Runs only while this
@@ -48,6 +64,9 @@ export function QuadrupedWidget({ heldKeys }) {
   useEffect(() => { joyActiveRef.current = joyActive }, [joyActive])
   const { active: statusActive, lastMsg: statusMsg } = useTopicActivity(
     '/quadruped_main_status', 'tmms_msgs/QuadrupedMainStatus', 1000
+  )
+  const { active: lowStateActive, lastMsg: lowStateMsg } = useTopicActivity(
+    '/lf/lowstate', 'unitree_go/LowState', 1000
   )
 
   // Ground truth from the robot, not an optimistic local guess.
@@ -342,6 +361,27 @@ export function QuadrupedWidget({ heldKeys }) {
               maxValue={rotSpeed}
               onChange={!joyActive && isWalkMode ? handleYawDrag : undefined}
             />
+          </div>
+
+          {/* Temps: 12 joint motor temperatures from /lf/lowstate */}
+          <div
+            className="flex flex-col gap-1 p-3 flex-shrink-0"
+            style={{ minWidth: 170, borderLeft: '1px solid var(--border)', overflowY: 'auto' }}
+          >
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', letterSpacing: '0.06em' }}>
+              JOINT TEMPS
+            </span>
+            {JOINT_LABELS.map(({ leg, joint }, i) => {
+              const temp = lowStateActive ? lowStateMsg?.motor_state?.[i]?.temperature : undefined
+              return (
+                <div key={`${leg}-${joint}`} className="flex items-center justify-between" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                  <span style={{ color: 'var(--text-dim)' }}>{leg} {joint}</span>
+                  <span style={{ color: temp === undefined ? 'var(--text-dim)' : jointTempColor(temp) }}>
+                    {temp === undefined ? '--' : `${temp}°C`}
+                  </span>
+                </div>
+              )
+            })}
           </div>
         </div>
       </div>
