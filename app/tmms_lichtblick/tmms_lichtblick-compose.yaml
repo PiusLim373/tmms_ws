@@ -5,4 +5,9 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - /home/unitree/.htxgrrt/bin/tmms_lichtblick/tmms_lichtblick_layout.json:/lichtblick/default-layout.json
+      # Served by Caddy at http://<host>:8080/layouts/*.json and pulled in
+      # per-page via Lichtblick's ?layoutUrl= param (see MappingPage.jsx /
+      # RecordingsPage.jsx), so each page gets its own layout regardless of
+      # what's cached in the browser's IndexedDB layout storage.
+      - /home/unitree/.htxgrrt/bin/tmms_lichtblick/mapping_layout.json:/src/layouts/mapping_layout.json:ro
+      - /home/unitree/.htxgrrt/bin/tmms_lichtblick/recording_layout.json:/src/layouts/recording_layout.json:ro

@@ -1,0 +1,226 @@
+{
+  "configById": {
+    "3D!12flisb": {
+      "cameraState": {
+        "perspective": true,
+        "distance": 8.802533372985724,
+        "phi": 52.50141910780628,
+        "thetaOffset": 132.67721228147343,
+        "targetOffset": [
+          1.743356005596541,
+          0.1632946452940175,
+          0.11466654597457293
+        ],
+        "target": [
+          0,
+          0,
+          0
+        ],
+        "targetOrientation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "fovy": 45,
+        "near": 0.5,
+        "far": 5000
+      },
+      "followMode": "follow-pose",
+      "followTf": "map",
+      "scene": {
+        "transforms": {
+          "labelSize": 0.11,
+          "showLabel": false
+        }
+      },
+      "transforms": {
+        "frame:base_footprint": {
+          "visible": false
+        },
+        "frame:odom": {
+          "visible": true
+        },
+        "frame:FL_calf": {
+          "visible": false
+        },
+        "frame:FL_thigh": {
+          "visible": false
+        },
+        "frame:FL_hip": {
+          "visible": false
+        },
+        "frame:base_link": {
+          "visible": true
+        },
+        "frame:FR_calf": {
+          "visible": false
+        },
+        "frame:FR_thigh": {
+          "visible": false
+        },
+        "frame:FR_hip": {
+          "visible": false
+        },
+        "frame:RL_calf": {
+          "visible": false
+        },
+        "frame:RL_thigh": {
+          "visible": false
+        },
+        "frame:RL_hip": {
+          "visible": false
+        },
+        "frame:RR_calf": {
+          "visible": false
+        },
+        "frame:RR_thigh": {
+          "visible": false
+        },
+        "frame:RR_hip": {
+          "visible": false
+        },
+        "frame:FL_calf_rotor": {
+          "visible": false
+        },
+        "frame:FL_foot": {
+          "visible": false
+        },
+        "frame:FL_hip_rotor": {
+          "visible": false
+        },
+        "frame:FL_thigh_rotor": {
+          "visible": false
+        },
+        "frame:FR_calf_rotor": {
+          "visible": false
+        },
+        "frame:FR_foot": {
+          "visible": false
+        },
+        "frame:FR_hip_rotor": {
+          "visible": false
+        },
+        "frame:FR_thigh_rotor": {
+          "visible": false
+        },
+        "frame:RL_calf_rotor": {
+          "visible": false
+        },
+        "frame:RL_foot": {
+          "visible": false
+        },
+        "frame:RL_hip_rotor": {
+          "visible": false
+        },
+        "frame:RL_thigh_rotor": {
+          "visible": false
+        },
+        "frame:RR_calf_rotor": {
+          "visible": false
+        },
+        "frame:RR_foot": {
+          "visible": false
+        },
+        "frame:RR_hip_rotor": {
+          "visible": false
+        },
+        "frame:RR_thigh_rotor": {
+          "visible": false
+        },
+        "frame:f_dc_link": {
+          "visible": false
+        },
+        "frame:f_oc_link": {
+          "visible": false
+        },
+        "frame:head_Link": {
+          "visible": false
+        },
+        "frame:imu_link": {
+          "visible": false
+        },
+        "frame:rslidar": {
+          "visible": false
+        },
+        "frame:r_dc_link": {
+          "visible": false
+        },
+        "frame:r_oc_link": {
+          "visible": false
+        },
+        "frame:tail_link": {
+          "visible": false
+        },
+        "frame:dog_imu_link": {
+          "visible": false
+        },
+        "frame:camera_front_link": {
+          "visible": false
+        },
+        "frame:camera_front_color_frame": {
+          "visible": false
+        },
+        "frame:camera_front_color_optical_frame": {
+          "visible": false
+        },
+        "frame:camera_front_depth_frame": {
+          "visible": false
+        },
+        "frame:camera_front_depth_optical_frame": {
+          "visible": false
+        }
+      },
+      "topics": {
+        "/rslidar_points": {
+          "visible": false,
+          "colorField": "intensity",
+          "colorMode": "colormap",
+          "colorMap": "turbo"
+        },
+        "/cloud_ground": {
+          "visible": false,
+          "colorField": "rgb",
+          "colorMode": "rgb",
+          "colorMap": "turbo"
+        },
+        "/cloud_obstacles": {
+          "visible": true,
+          "colorField": "rgb",
+          "colorMode": "rgb",
+          "colorMap": "turbo",
+          "pointSize": 3,
+          "pointShape": "square"
+        },
+        "/map": {
+          "visible": true,
+          "colorMode": "map",
+          "frameLocked": false,
+          "alpha": 0.5000000000000001
+        },
+        "/robot_description": {
+          "visible": true,
+          "displayMode": "collision",
+          "fallbackColor": "#553480"
+        }
+      },
+      "layers": {},
+      "publish": {
+        "type": "point",
+        "poseTopic": "/move_base_simple/goal",
+        "pointTopic": "/clicked_point",
+        "poseEstimateTopic": "/initialpose",
+        "poseEstimateXDeviation": 0.5,
+        "poseEstimateYDeviation": 0.5,
+        "poseEstimateThetaDeviation": 0.26179939
+      },
+      "imageMode": {}
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": {
+    "speed": 5
+  },
+  "layout": "3D!12flisb"
+}

@@ -116,7 +116,11 @@ export function RecordingsPage() {
     }
   }
 
-  const lichtblickUrl = `http://${window.location.hostname}:8080`
+  // layoutUrl re-fetches and re-applies recording_layout.json on every load,
+  // overriding whatever layout is cached in the browser so this page always
+  // opens with the recording-specific panel setup (see tmms_lichtblick-compose.yaml).
+  const layoutUrl = `http://${window.location.hostname}:8080/layouts/recording_layout.json`
+  const lichtblickUrl = `http://${window.location.hostname}:8080/?layoutUrl=${encodeURIComponent(layoutUrl)}`
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
