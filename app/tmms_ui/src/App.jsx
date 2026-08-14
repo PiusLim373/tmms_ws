@@ -21,7 +21,7 @@ export default function App() {
   }, [theme])
 
   // Resizable split state — fractions of available area
-  const [camHeightPct, setCamHeightPct] = useState(0.65)
+  const [camHeightPct, setCamHeightPct] = useState(0.585)
   const [topdownPct, setTopdownPct]     = useState(0.282)
   const [wristPct, setWristPct]         = useState(0.235)
 

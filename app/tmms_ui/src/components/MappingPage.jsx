@@ -14,8 +14,8 @@ export function MappingPage() {
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
-      {/* Left 60%: embedded Lichtblick */}
-      <div style={{ width: '70%', flexShrink: 0, overflow: 'hidden', borderRight: '1px solid var(--border)' }}>
+      {/* Left 65%: embedded Lichtblick */}
+      <div style={{ width: '65%', flexShrink: 0, overflow: 'hidden', borderRight: '1px solid var(--border)' }}>
         <iframe
           src={lichtblickUrl}
           title="Lichtblick"

@@ -77,7 +77,7 @@ export function Footer({ connected, page, onNavigate }) {
         title="Send damp command — all quadruped motors will be disabled and robot will fall"
       >
         <span style={{ fontSize: 15 }}>⚠</span>
-        ESTOP — ALL MOTORS DAMP
+        ESTOP — DAMP ALL MOTORS
       </button>
 
       {/* Right: spacer to balance left nav, keeps ESTOP centered */}

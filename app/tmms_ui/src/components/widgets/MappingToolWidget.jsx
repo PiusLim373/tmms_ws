@@ -220,6 +220,35 @@ export function MappingToolWidget() {
     }
   }
 
+  function doDeleteMap(filename) {
+    setBusy(true)
+    fetch(`/api/maps/${filename}`, { method: 'DELETE' })
+      .then((r) => {
+        if (!r.ok) return r.json().then((b) => { throw new Error(b.error || `delete failed (${r.status})`) })
+        return r.json()
+      })
+      .then(() => {
+        showToast(`Deleted ${filename}`)
+        fetchMaps()
+        setBusy(false)
+      })
+      .catch((err) => { showToast(`Delete failed: ${err.message}`); setBusy(false) })
+  }
+
+  function handleDeleteMap(filename) {
+    const mapName = filename.replace(/\.db$/, '')
+    if (mappingState.mapName === mapName) return
+    setWarningModal({
+      open: true,
+      title: `Delete "${filename}"?`,
+      body: 'This will permanently remove the map file from disk. This cannot be undone.',
+      onConfirm: () => {
+        setWarningModal((w) => ({ ...w, open: false }))
+        doDeleteMap(filename)
+      },
+    })
+  }
+
   const nameInvalid = newMapName.length > 0 && !MAP_NAME_RE.test(newMapName)
 
   return (
@@ -326,7 +355,7 @@ export function MappingToolWidget() {
             {maps.length === 0 && (
               <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>No maps found in {MAPS_DIR}/.</div>
             )}
-            {maps.map(({ filename, sizeBytes, mtime }) => (
+            {maps.map(({ filename, sizeBytes }) => (
               <div
                 key={filename}
                 style={{
@@ -337,7 +366,7 @@ export function MappingToolWidget() {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-h)', wordBreak: 'break-all' }}>{filename}</div>
                   <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)' }}>
-                    {formatBytes(sizeBytes)} · {new Date(mtime).toLocaleString()}
+                    {formatBytes(sizeBytes)}
                   </div>
                 </div>
                 <button
@@ -371,30 +400,45 @@ export function MappingToolWidget() {
             {maps.length === 0 && (
               <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>No maps found in {MAPS_DIR}/.</div>
             )}
-            {maps.map(({ filename, sizeBytes, mtime }) => (
-              <div
-                key={filename}
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-                  padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 4,
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-h)', wordBreak: 'break-all' }}>{filename}</div>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)' }}>
-                    {formatBytes(sizeBytes)} · {new Date(mtime).toLocaleString()}
+            {maps.map(({ filename, sizeBytes }) => {
+              const mapName = filename.replace(/\.db$/, '')
+              const isActive = mappingState.mapName === mapName
+              return (
+                <div
+                  key={filename}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                    padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 4,
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-h)', wordBreak: 'break-all' }}>{filename}</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)' }}>
+                      {formatBytes(sizeBytes)}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                    <a
+                      className="btn-icon"
+                      style={{ fontSize: 11, padding: '4px 8px', textDecoration: 'none' }}
+                      href={mapFileUrl(filename)}
+                      download={filename}
+                    >
+                      ⬇ Download
+                    </a>
+                    <button
+                      className="btn-icon"
+                      style={{ fontSize: 11, padding: '4px 8px', borderColor: '#DC2626', color: '#DC2626' }}
+                      onClick={() => handleDeleteMap(filename)}
+                      disabled={busy || isActive}
+                      title={isActive ? 'Cannot delete the currently active map' : undefined}
+                    >
+                      ✕ Delete
+                    </button>
                   </div>
                 </div>
-                <a
-                  className="btn-icon"
-                  style={{ fontSize: 11, padding: '4px 8px', textDecoration: 'none', flexShrink: 0 }}
-                  href={mapFileUrl(filename)}
-                  download={filename}
-                >
-                  ⬇ Download
-                </a>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>

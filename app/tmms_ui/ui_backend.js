@@ -176,6 +176,7 @@ app.get('/api/maps', (_req, res) => {
   const filenames = fs.readdirSync(MAPS_DIR)
     .filter((f) => f.endsWith('.db'))
     .sort()
+    .reverse()
   const files = filenames.map((filename) => {
     const stat = fs.statSync(path.join(MAPS_DIR, filename))
     return { filename, sizeBytes: stat.size, mtime: stat.mtime.toISOString() }
@@ -209,6 +210,25 @@ app.post('/api/maps', mapsUpload.single('file'), (req, res) => {
   // request is ever sent — the backend just executes and reports the result.
   fs.writeFileSync(destPath, req.file.buffer)
   res.json({ filename, overwritten })
+})
+
+app.delete('/api/maps/:filename', (req, res) => {
+  const filename = req.params.filename
+  if (!MAP_FILENAME_RE.test(filename)) {
+    return res.status(400).end()
+  }
+  const targetPath = path.join(MAPS_DIR, filename)
+  if (!fs.existsSync(targetPath)) {
+    return res.status(404).json({ error: 'file not found', filename })
+  }
+  const mapName = filename.replace(/\.db$/, '')
+  if (mappingState.mapName === mapName) {
+    // Block regardless of mappingState.mapping — rtabmap may have this file
+    // open either while actively mapping or while loaded for localization.
+    return res.status(409).json({ error: 'cannot delete the currently active map', mapName })
+  }
+  fs.unlinkSync(targetPath)
+  res.json({ filename, deleted: true })
 })
 
 app.get('/api/mapping-state', (_req, res) => {
