@@ -3,13 +3,13 @@
     "3D!12flisb": {
       "cameraState": {
         "perspective": true,
-        "distance": 8.802533372985724,
-        "phi": 52.50141910780628,
-        "thetaOffset": 132.67721228147343,
+        "distance": 16.290124999896058,
+        "phi": 49.38663334453223,
+        "thetaOffset": 105.19624832803295,
         "targetOffset": [
-          1.743356005596541,
-          0.1632946452940175,
-          0.11466654597457293
+          -1.9555959710686968,
+          2.950535790361483,
+          0.11466654597457304
         ],
         "target": [
           0,
@@ -27,7 +27,7 @@
         "far": 5000
       },
       "followMode": "follow-pose",
-      "followTf": "map",
+      "followTf": "odom",
       "scene": {
         "transforms": {
           "labelSize": 0.11,
@@ -202,6 +202,12 @@
           "visible": true,
           "displayMode": "collision",
           "fallbackColor": "#553480"
+        },
+        "/downsampled_fastlio_map": {
+          "visible": true,
+          "colorField": "intensity",
+          "colorMode": "colormap",
+          "colorMap": "turbo"
         }
       },
       "layers": {},

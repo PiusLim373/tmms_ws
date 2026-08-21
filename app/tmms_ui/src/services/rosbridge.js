@@ -93,19 +93,26 @@ export function callService(serviceName, data, onResult, onError) {
   callRosService(serviceName, 'tmms_msgs/StringTrigger', { data }, onResult, onError)
 }
 
-export function loadRtabmapDatabase(databasePath, clear, onResult, onError) {
+// Mapping sessions are owned by mapping_utils' mapping_manager_node, which starts and stops
+// tmms_master's fast_lio.launch.py. It builds the .pcd path itself from the map name, so the
+// UI never sends a filesystem path.
+//
+// NOTE: unlike the rtabmap std_srvs/Empty services these replaced, both of these return
+// success + message. onResult fires on TRANSPORT success, so a rejected request (bad name,
+// TF lookup failed, session already active) arrives through onResult with success: false.
+// Every caller must branch on result.success and surface result.message.
+export function startMapping(mapName, onResult, onError) {
   callRosService(
-    '/rtabmap/load_database',
-    'rtabmap_msgs/srv/LoadDatabase',
-    { database_path: databasePath, clear },
+    '/mapping_manager/start_mapping',
+    'tmms_msgs/srv/StringTrigger',
+    { data: mapName },
     onResult, onError
   )
 }
 
-export function setRtabmapModeMapping(onResult, onError) {
-  callRosService('/rtabmap/set_mode_mapping', 'std_srvs/srv/Empty', {}, onResult, onError)
-}
-
-export function setRtabmapModeLocalization(onResult, onError) {
-  callRosService('/rtabmap/set_mode_localization', 'std_srvs/srv/Empty', {}, onResult, onError)
+// Blocks for the whole /map_save write, which is seconds-to-minutes on a large map, and
+// roslib applies no timeout of its own. Callers need a visible "saving" state, not just a
+// disabled button.
+export function stopMapping(onResult, onError) {
+  callRosService('/mapping_manager/stop_mapping', 'std_srvs/srv/Trigger', {}, onResult, onError)
 }

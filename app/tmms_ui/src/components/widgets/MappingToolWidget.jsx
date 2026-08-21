@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  loadRtabmapDatabase,
-  setRtabmapModeMapping,
-  setRtabmapModeLocalization,
-} from '../../services/rosbridge'
+import { startMapping, stopMapping } from '../../services/rosbridge'
 import { WarningModal } from '../ui/WarningModal'
 import { Toast } from '../ui/Toast'
 
 const MAP_NAME_RE = /^[A-Za-z0-9_]+$/
+// Display only, for the empty-state text. mapping_manager_node owns the real path and builds
+// <maps_dir>/<name>.pcd itself, so nothing here is ever sent to the robot.
 const MAPS_DIR = '~/.htxgrrt/maps'
 
 const mapFileUrl = (filename) =>
@@ -28,9 +26,8 @@ function formatAgo(seconds) {
 }
 
 const SUB_VIEWS = [
-  { key: 'start', label: 'Start New Mapping' },
-  { key: 'load', label: 'Load Map' },
-  { key: 'files', label: 'Download / Upload' },
+  { key: 'start', label: 'Create Map' },
+  { key: 'manage', label: 'Manage Maps' },
 ]
 
 export function MappingToolWidget() {
@@ -42,6 +39,7 @@ export function MappingToolWidget() {
   const [maps, setMaps] = useState([])
   const [newMapName, setNewMapName] = useState('')
   const [busy, setBusy] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [pendingRetry, setPendingRetry] = useState(null)
   const [toastMsg, setToastMsg] = useState(null)
   const [uploadError, setUploadError] = useState(null)
@@ -122,23 +120,24 @@ export function MappingToolWidget() {
     syncBackendState(pendingRetry)
   }
 
+  // start_mapping/stop_mapping return success + message, and roslib delivers a rejected
+  // request through the SUCCESS callback — a transport-level success carrying success: false.
+  // So both handlers branch on res.success and show res.message rather than assuming the
+  // callback firing means it worked.
   function doStartMapping(mapName) {
     setBusy(true)
-    const dbPath = `${MAPS_DIR}/${mapName}.db`
-    loadRtabmapDatabase(dbPath, true,
-      () => {
-        setRtabmapModeMapping(
-          () => syncBackendState({ action: 'start', mapName }, `Mapping started: ${mapName}`),
-          (err) => { showToast(`set_mode_mapping failed: ${err}`); setBusy(false) }
-        )
+    startMapping(mapName,
+      (res) => {
+        if (!res.success) { showToast(res.message || 'Start mapping failed'); setBusy(false); return }
+        syncBackendState({ action: 'start', mapName }, `Mapping started: ${mapName}`)
       },
-      (err) => { showToast(`load_database failed: ${err}`); setBusy(false) }
+      (err) => { showToast(`start_mapping failed: ${err}`); setBusy(false) }
     )
   }
 
   function handleStartClick() {
     if (mappingState.mapping || !MAP_NAME_RE.test(newMapName)) return
-    const exists = maps.some((m) => m.filename === `${newMapName}.db`)
+    const exists = maps.some((m) => m.filename === `${newMapName}.pcd`)
     if (exists) {
       setWarningModal({
         open: true,
@@ -154,27 +153,21 @@ export function MappingToolWidget() {
     }
   }
 
+  // stop_mapping runs /map_save to completion before killing the launch, so this call is
+  // held open for the entire PCD write. `saving` drives a visible state for that wait.
   function handleEndMapping() {
     setBusy(true)
-    setRtabmapModeLocalization(
-      () => syncBackendState({ action: 'end' }, 'Mapping ended — back to localization.'),
-      (err) => { showToast(`set_mode_localization failed: ${err}`); setBusy(false) }
-    )
-  }
-
-  function handleLoadMap(filename) {
-    if (mappingState.mapping) return
-    const mapName = filename.replace(/\.db$/, '')
-    setBusy(true)
-    setRtabmapModeLocalization(
-      () => {
-        const dbPath = `${MAPS_DIR}/${filename}`
-        loadRtabmapDatabase(dbPath, false,
-          () => syncBackendState({ action: 'load', mapName }, `Loaded map: ${mapName}`),
-          (err) => { showToast(`load_database failed: ${err}`); setBusy(false) }
-        )
+    setSaving(true)
+    stopMapping(
+      (res) => {
+        setSaving(false)
+        // The session is over either way — mapping_manager tears the launch down even when
+        // the save fails — so sync the backend regardless and report what actually happened.
+        syncBackendState({ action: 'end' }, res.success ? 'Map saved — mapping ended.' : null)
+        if (!res.success) showToast(res.message || 'Map save failed — session ended anyway')
+        fetchMaps()
       },
-      (err) => { showToast(`set_mode_localization failed: ${err}`); setBusy(false) }
+      (err) => { setSaving(false); showToast(`stop_mapping failed: ${err}`); setBusy(false) }
     )
   }
 
@@ -199,8 +192,8 @@ export function MappingToolWidget() {
     const file = e.target.files[0]
     e.target.value = ''
     if (!file) return
-    if (!/^[A-Za-z0-9_]+\.db$/.test(file.name)) {
-      setUploadError('Filename must match [A-Za-z0-9_]+.db')
+    if (!/^[A-Za-z0-9_]+\.pcd$/.test(file.name)) {
+      setUploadError('Filename must match [A-Za-z0-9_]+.pcd')
       return
     }
     setUploadError(null)
@@ -236,8 +229,11 @@ export function MappingToolWidget() {
   }
 
   function handleDeleteMap(filename) {
-    const mapName = filename.replace(/\.db$/, '')
-    if (mappingState.mapName === mapName) return
+    // Only guard the map of a LIVE session. mappingState.mapName deliberately survives
+    // action:'end', and under FAST-LIO nothing holds the .pcd once the session is over —
+    // keying on the name alone would block deleting the map you just finished.
+    const mapName = filename.replace(/\.pcd$/, '')
+    if (mappingState.mapping && mappingState.mapName === mapName) return
     setWarningModal({
       open: true,
       title: `Delete "${filename}"?`,
@@ -285,7 +281,7 @@ export function MappingToolWidget() {
           <div>
             Status:{' '}
             <span style={{ color: mappingState.mapping ? '#22C55E' : 'var(--text-h)' }}>
-              {mappingState.mapping ? `MAPPING (${mappingState.mapName})` : 'LOCALIZATION'}
+              {mappingState.mapping ? `MAPPING (${mappingState.mapName})` : 'IDLE'}
             </span>
           </div>
           {mappingState.mapName && (
@@ -311,8 +307,14 @@ export function MappingToolWidget() {
                   onClick={handleEndMapping}
                   disabled={busy}
                 >
-                  ■ End Mapping
+                  {saving ? '⏳ Saving map…' : '■ End Mapping'}
                 </button>
+                {saving && (
+                  <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                    Writing the .pcd to disk. This can take a while on a large map — do not
+                    close this page.
+                  </div>
+                )}
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -347,42 +349,7 @@ export function MappingToolWidget() {
           </>
         )}
 
-        {subView === 'load' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {mappingState.mapping && (
-              <div style={{ fontSize: 11, color: '#EF4444' }}>End the current mapping session before loading another map.</div>
-            )}
-            {maps.length === 0 && (
-              <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>No maps found in {MAPS_DIR}/.</div>
-            )}
-            {maps.map(({ filename, sizeBytes }) => (
-              <div
-                key={filename}
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-                  padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 4,
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-h)', wordBreak: 'break-all' }}>{filename}</div>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)' }}>
-                    {formatBytes(sizeBytes)}
-                  </div>
-                </div>
-                <button
-                  className="btn-icon"
-                  style={{ fontSize: 11, padding: '4px 8px', flexShrink: 0 }}
-                  onClick={() => handleLoadMap(filename)}
-                  disabled={busy || mappingState.mapping}
-                >
-                  Load
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {subView === 'files' && (
+        {subView === 'manage' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div>
               <button
@@ -391,24 +358,34 @@ export function MappingToolWidget() {
                 onClick={() => fileInputRef.current?.click()}
                 disabled={busy}
               >
-                ⬆ Upload .db file
+                ⬆ Upload .pcd file
               </button>
-              <input ref={fileInputRef} type="file" accept=".db" style={{ display: 'none' }} onChange={handleFileSelect} />
+              <input ref={fileInputRef} type="file" accept=".pcd" style={{ display: 'none' }} onChange={handleFileSelect} />
               {uploadError && <div style={{ fontSize: 11, color: '#EF4444', marginTop: 4 }}>{uploadError}</div>}
             </div>
 
+            {mappingState.mapping && (
+              <div style={{ fontSize: 11, color: '#EF4444' }}>
+                A mapping session is active — its map cannot be deleted until you end it.
+              </div>
+            )}
             {maps.length === 0 && (
               <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>No maps found in {MAPS_DIR}/.</div>
             )}
             {maps.map(({ filename, sizeBytes }) => {
-              const mapName = filename.replace(/\.db$/, '')
-              const isActive = mappingState.mapName === mapName
+              const mapName = filename.replace(/\.pcd$/, '')
+              // Highlighted while a session is writing it; that is also the only time it is
+              // locked, since FAST-LIO holds no handle on the file once the session ends.
+              const isActive = mappingState.mapping && mappingState.mapName === mapName
               return (
                 <div
                   key={filename}
                   style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-                    padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 4,
+                    padding: '6px 8px',
+                    border: '1px solid var(--border)', borderRadius: 4,
+                    borderLeft: isActive ? '3px solid var(--accent-bright)' : '3px solid transparent',
+                    background: isActive ? 'color-mix(in srgb, var(--accent-bright) 18%, transparent)' : 'transparent',
                   }}
                 >
                   <div style={{ minWidth: 0 }}>
@@ -431,7 +408,7 @@ export function MappingToolWidget() {
                       style={{ fontSize: 11, padding: '4px 8px', borderColor: '#DC2626', color: '#DC2626' }}
                       onClick={() => handleDeleteMap(filename)}
                       disabled={busy || isActive}
-                      title={isActive ? 'Cannot delete the currently active map' : undefined}
+                      title={isActive ? 'Cannot delete the map being written right now' : undefined}
                     >
                       ✕ Delete
                     </button>

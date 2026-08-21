@@ -33,15 +33,23 @@ const MAPS_DIR = process.env.TMMS_MAPS_DIR
   || path.join(os.homedir(), '.htxgrrt', 'maps')
 fs.mkdirSync(MAPS_DIR, { recursive: true })
 
-const MAP_FILENAME_RE = /^[A-Za-z0-9_]+\.db$/
+// Maps are FAST-LIO point clouds written by /map_save, one .pcd per session. Anchored,
+// with no dot/slash/dash possible — this regex is the whole path-traversal defense for the
+// routes below, which all path.join() straight onto MAPS_DIR.
+const MAP_FILENAME_RE = /^[A-Za-z0-9_]+\.pcd$/
 const MAP_NAME_RE = /^[A-Za-z0-9_]+$/
 
-// In-memory only — resets to idle on backend/container restart. There is no
-// ROS-native way to query rtabmap's current mapping-vs-localization mode, so
-// this is the single source of truth for "are we mapping right now."
+// In-memory only — resets to idle on backend/container restart. Mirrors the session
+// mapping_manager_node actually owns; the UI syncs it after each start/stop service call.
 let mappingState = { mapping: false, mapName: null, startedAt: null }
 
-const mapsUpload = multer({ storage: multer.memoryStorage() })
+// FAST-LIO .pcd maps run far larger than the rtabmap .db files this was sized for, and
+// memoryStorage buffers the whole upload in the Node heap. Cap it rather than letting a
+// big file OOM the backend.
+const mapsUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 * 1024 },
+})
 
 const app = express()
 
@@ -174,7 +182,7 @@ app.use('/api/maps', cors({
 
 app.get('/api/maps', (_req, res) => {
   const filenames = fs.readdirSync(MAPS_DIR)
-    .filter((f) => f.endsWith('.db'))
+    .filter((f) => f.endsWith('.pcd'))
     .sort()
     .reverse()
   const files = filenames.map((filename) => {
@@ -202,7 +210,7 @@ app.post('/api/maps', mapsUpload.single('file'), (req, res) => {
   }
   const filename = req.file.originalname
   if (!MAP_FILENAME_RE.test(filename)) {
-    return res.status(400).json({ error: 'filename must match [A-Za-z0-9_]+.db' })
+    return res.status(400).json({ error: 'filename must match [A-Za-z0-9_]+.pcd' })
   }
   const destPath = path.join(MAPS_DIR, filename)
   const overwritten = fs.existsSync(destPath)
@@ -221,22 +229,26 @@ app.delete('/api/maps/:filename', (req, res) => {
   if (!fs.existsSync(targetPath)) {
     return res.status(404).json({ error: 'file not found', filename })
   }
-  const mapName = filename.replace(/\.db$/, '')
-  if (mappingState.mapName === mapName) {
-    // Block regardless of mappingState.mapping — rtabmap may have this file
-    // open either while actively mapping or while loaded for localization.
-    return res.status(409).json({ error: 'cannot delete the currently active map', mapName })
+  const mapName = filename.replace(/\.pcd$/, '')
+  if (mappingState.mapping && mappingState.mapName === mapName) {
+    // Only guard a LIVE session. mapName deliberately outlives action:'end' so the
+    // "last saved" readout keeps working, but FAST-LIO holds no handle on the .pcd once
+    // the session is over — keying on the name alone would block deleting a finished map.
+    return res.status(409).json({ error: 'cannot delete the map being written right now', mapName })
   }
   fs.unlinkSync(targetPath)
   res.json({ filename, deleted: true })
 })
 
 app.get('/api/mapping-state', (_req, res) => {
+  // FAST-LIO only writes the .pcd when /map_save runs at End Mapping, so this stays null
+  // for the whole session and then jumps to a real value. (rtabmap used to write its .db
+  // continuously, which is why this used to tick up live.)
   let lastSavedAgoSeconds = null
   if (mappingState.mapName) {
-    const dbPath = path.join(MAPS_DIR, `${mappingState.mapName}.db`)
-    if (fs.existsSync(dbPath)) {
-      lastSavedAgoSeconds = Math.floor((Date.now() - fs.statSync(dbPath).mtime.getTime()) / 1000)
+    const pcdPath = path.join(MAPS_DIR, `${mappingState.mapName}.pcd`)
+    if (fs.existsSync(pcdPath)) {
+      lastSavedAgoSeconds = Math.floor((Date.now() - fs.statSync(pcdPath).mtime.getTime()) / 1000)
     }
   }
   res.json({
@@ -267,18 +279,10 @@ app.post('/api/mapping-state', (req, res) => {
     return res.json(mappingState)
   }
 
-  if (action === 'load') {
-    if (mappingState.mapping) {
-      return res.status(409).json({ error: 'end the current mapping session first' })
-    }
-    if (!mapName || !MAP_NAME_RE.test(mapName)) {
-      return res.status(400).json({ error: 'mapName must match [A-Za-z0-9_]+' })
-    }
-    mappingState = { mapping: false, mapName, startedAt: null }
-    return res.json(mappingState)
-  }
+  // No 'load' action: loading a map back in is a FAST-LIO problem with no service to bind
+  // to (unlike rtabmap's load_database), so the Load button is gone until that is solved.
 
-  return res.status(400).json({ error: 'action must be "start", "end", or "load"' })
+  return res.status(400).json({ error: 'action must be "start" or "end"' })
 })
 
 if (isProd) {

@@ -1,0 +1,40 @@
+# map_downsampler config: voxel-downsamples FAST-LIO's /Laser_map for live streaming to
+# Lichtblick over rosbridge.
+#
+# Launch with:  ros2 launch tmms_master fast_lio.launch.py
+# (fast_lio.launch.py starts the node by default; enable_map_downsampler:=false turns it off.)
+#
+# Why this is needed: /Laser_map is the WHOLE accumulated map re-serialised every second,
+# with no deduplication, at 48 bytes/point -- 41 MB per message at 855k points, and still
+# growing. rosbridge cannot sustain that and the Lichtblick view freezes a minute or two in.
+# Voxelising makes the point count track mapped-surface-area / leaf^2, which SATURATES once
+# an area has been covered instead of growing forever.
+#
+# This does NOT affect the map saved by /map_save. That writes FAST-LIO's own pcl_wait_pub
+# buffer (laserMapping.cpp:611); this node only subscribes to the published topic and cannot
+# reach that buffer. Changing leaf_size here can never degrade a saved PCD.
+#
+# NOTE: every float MUST be written with an explicit decimal point, or the ROS 2 yaml
+# parameter parser infers int and throws InvalidParameterTypeException.
+/**:
+    ros__parameters:
+        input_topic: "/Laser_map"
+        output_topic: "/downsampled_fastlio_map"
+
+        # Metres, applied to all three axes. Rough guide for a typical indoor space, at the
+        # 32 B/pt of the output:
+        #   0.3  ->  ~150-300k pts   2.4-4.8 MB   more detail, still multi-MB on a big site
+        #   0.5  ->   ~50-100k pts   1.6-3.2 MB   rooms/corridors clearly legible
+        #   1.0  ->    ~15-25k pts   0.5-0.8 MB   coverage-only, features not legible
+        #
+        # Do NOT set this very small. PCL's VoxelGrid does not error when the leaf is too
+        # small for the map's extent -- voxel_grid.hpp:248-258 warns and then passes the
+        # cloud through COMPLETELY UNFILTERED, which would put the full 41 MB back on the
+        # bridge. map_downsampler_node checks for this up front and refuses to publish, so
+        # if the topic goes silent, check its log for the minimum safe leaf size.
+        leaf_size: 0.1
+
+        # Extra throttle on top of the 1 Hz input. 0.0 = process every message. Raise it if
+        # the filter starts costing real CPU on a very large map (the cost grows with the
+        # map, since each message is the full cloud).
+        min_publish_period_s: 0.0

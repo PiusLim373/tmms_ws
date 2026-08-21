@@ -1,0 +1,82 @@
+# FAST-LIO2 config for the B2 robot's RoboSense 32-beam lidar.
+#
+# Consumes /converted_rslidar_points from the lidar_converter node -- NOT /rslidar_points
+# directly. The converter rewrites the RoboSense layout into the Velodyne one and fixes
+# the scan-END header stamp that RoboSense emits (FAST-LIO assumes scan START).
+#
+# Launch with:  ros2 launch tmms_master fast_lio.launch.py
+#
+# fast_lio.launch.py overrides common.lid_topic from its `output_topic` arg -- the same arg
+# that configures the converter -- so the two can never drift. The value below is the
+# documented default for running the node standalone.
+#
+# NOTE: every float MUST be written with an explicit decimal point. The yaml parameter
+# parser fixes a sequence's type from its first element, so [1.0, 0, 0] throws
+# InvalidParameterTypeException.
+/**:
+    ros__parameters:
+        feature_extract_enable: false     # FAST-LIO2 works on raw surf points; the feature
+                                          # branch is a different, less accurate path
+        point_filter_num: 3               # ~32.7k valid pts/scan -> ~10.9k into the KF.
+                                          # Avoid 4: with 32 rings, i%4 biases ring selection
+        max_iteration: 3
+        filter_size_surf: 0.2             # indoor, mean range 4.6 m -- 0.5 is too coarse
+        filter_size_map: 0.2
+        cube_side_length: 200.0           # must exceed 2*1.5*det_range (laserMapping.cpp:255)
+        runtime_pos_log_enable: false
+        # /map_save writes here. Must be absolute; save_to_pcd() does not create the dir.
+        map_file_path: "/home/htxgrrt/.htxgrrt/maps/rslidar_map.pcd"
+
+        common:
+            lid_topic:  "/converted_rslidar_points"   # lidar_converter output
+            imu_topic:  "/dog_imu_raw"        # already m/s^2 + rad/s, no conversion needed
+            time_sync_en: false               # lidar and IMU share one clock domain
+            # Do NOT put the RoboSense 100 ms scan-end offset here: this shifts the IMU
+            # stamps, not the lidar ones, and desyncs sync_packages. The converter fixes it
+            # properly by rewriting the lidar header stamp.
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 2                 # VELO16 path -> velodyne_ros::Point
+            scan_line: 32                 # must be >= max ring + 1; preprocess.cpp:434
+                                          # indexes is_first[ring] with no bounds check
+            scan_rate: 10                 # Hz; only used by the azimuth fallback we never hit
+            timestamp_unit: 0             # 0=SEC. MUST stay in lockstep with the converter,
+                                          # which emits `time` in relative seconds
+            blind: 0.5                    # robot self-returns measured at 3D range 0.25-0.29 m
+
+        mapping:
+            acc_cov: 0.1                  # raise to 0.2-0.5 if the map smears while trotting
+            gyr_cov: 0.1                  # (foot-impact accel spikes)
+            b_acc_cov: 0.0001
+            b_gyr_cov: 0.0001
+            fov_degree:    360.0          # mechanical spinning lidar
+            det_range:     30.0           # measured max range 22.7 m indoor
+            extrinsic_est_en:  true       # refine the URDF guess online
+            # Lidar pose w.r.t. IMU, from tmms_description.urdf.xacro:
+            #   (base_link->rslidar)      [0.34218, 0,        0.17851]
+            # - (base_link->dog_imu_link) [0,      -0.02341,   0.04927]
+            # Validated against a ground-plane fit of the real cloud: normal [0,0,1]
+            # (0.04 deg tilt), ground at -0.662 m vs URDF-predicted -0.698 m.
+            extrinsic_T: [ 0.34218, 0.02341, 0.12924 ]
+            extrinsic_R: [ 1.0, 0.0, 0.0,
+                           0.0, 1.0, 0.0,
+                           0.0, 0.0, 1.0 ]
+
+        publish:
+            path_en:  true
+            effect_map_en: false
+            map_en: true                  # REQUIRED for /map_save: publish_map() is the only
+                                          # thing that fills pcl_wait_pub
+            scan_publish_en:  true
+            dense_publish_en: true       # publish_map() republishes the WHOLE accumulated
+                                          # map at 1 Hz; dense -> >100 MB msgs on the full bag
+            scan_bodyframe_pub_en: false
+
+        pcd_save:
+            pcd_save_en: true             # gates the /map_save service. The per-scan save
+                                          # block at laserMapping.cpp:515-542 is COMMENTED
+                                          # OUT, so this alone saves nothing -- you must run
+                                          # `ros2 service call /map_save std_srvs/srv/Trigger`
+                                          # BEFORE Ctrl-C.
+            interval: -1
