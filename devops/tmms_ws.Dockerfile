@@ -27,11 +27,15 @@ RUN apt-get update && \
     iproute2 \
     lsof \
     ros-jazzy-rosbridge-suite \
-    ros-jazzy-rtabmap-ros
+    ros-jazzy-rtabmap-ros \
+    ros-jazzy-librealsense2* \
+    ros-jazzy-realsense2-* \
+    ros-jazzy-navigation2 \
+    ros-jazzy-nav2-bringup
 
 RUN apt-get install -y \
-    ros-jazzy-librealsense2* \
-    ros-jazzy-realsense2-*
+    libpcl-dev \
+    libeigen3-dev
 
 # Setup ROS environment
 SHELL ["/bin/bash", "-c"]
@@ -65,6 +69,31 @@ RUN echo "alias dir_du='du -h --max-depth=1 | sort -hr'" >> /home/htxgrrt/.bashr
 RUN echo "alias build_all='colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release'" >> /home/htxgrrt/.bashrc
 # tar the install folder
 RUN echo "alias tar_install='tar -cvzf install.tar.gz install/'" >> /home/htxgrrt/.bashrc
+
+# temp folder for building and installing dependencies
+RUN mkdir -p /home/htxgrrt/.htxgrrt/tmp
+
+# build and install LivoxSDK2, required to build fastlio, runtime not needed
+RUN cd /home/htxgrrt/.htxgrrt/tmp && \
+    git clone https://github.com/Livox-SDK/Livox-SDK2.git && \
+    cd Livox-SDK2 && \
+    mkdir build && cd build && \
+    cmake .. && \
+    make -j$(nproc) && \
+    sudo make install
+    
+# build and install sophus, requered to build fastlivo
+RUN cd /home/htxgrrt/.htxgrrt/tmp && \
+    git clone --depth=1 https://github.com/strasdat/Sophus.git -b 1.22.10 && \
+    cd Sophus && \
+    mkdir build && cd build && \
+    cmake -DBUILD_SOPHUS_TESTS=OFF -DBUILD_SOPHUS_EXAMPLES=OFF -DCMAKE_BUILD_TYPE=Release .. && \
+    make -j$(nproc) && \
+    sudo make install
+
+# clean up
+RUN rm -rf /home/htxgrrt/.htxgrrt/tmp
+
 
 # Default entrypoint
 ENTRYPOINT ["/bin/bash"]

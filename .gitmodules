@@ -6,3 +6,11 @@
 	path = src/utils/cyclonedds_ws/src/rmw_cyclonedds
 	url = https://github.com/ros2/rmw_cyclonedds
 	branch = jazzy
+[submodule "src/tmms_mapping/src/FAST_LIO"]
+	path = src/tmms_mapping/src/FAST_LIO
+	url = git@github.com:PiusLim373/FAST_LIO.git
+	branch = tmms
+[submodule "src/tmms_mapping/src/FAST-LIVO2-ROS2"]
+	path = src/tmms_mapping/src/FAST-LIVO2-ROS2
+	url = git@github.com:PiusLim373/FAST-LIVO2-ROS2.git
+	branch = tmms
