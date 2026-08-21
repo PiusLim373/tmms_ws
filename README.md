@@ -26,6 +26,18 @@ devops/
 ```
 
 
+## Setup
+
+Export `TMMS_WS_PATH` pointing at your checkout of this workspace:
+
+```bash
+export TMMS_WS_PATH=/abs/path/to/tmms_ws
+```
+
+Add it to your `~/.bashrc` to make it permanent.
+
+This is required — `devops/tmms_ws-devops-compose.yaml` reads it to decide what to bind-mount into the build container, and `docker compose` will refuse to start without it. It also lets you use `$TMMS_WS_PATH` in place of `<PATH TO TMMS_WS>` in every command below.
+
 ## Build
 
 There are two ways to build this workspace: quick iteration on a dev machine, or an official build for the actual robot.

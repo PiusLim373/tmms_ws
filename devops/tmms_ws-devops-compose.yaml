@@ -1,6 +1,6 @@
 services:
   tmms_build:
-    image: tmms_image:0.1.2
+    image: tmms_image:0.1.3
     platform: linux/arm64
     container_name: tmms_build
     # Enable all port forwarding
@@ -13,5 +13,5 @@ services:
     devices:
       - /dev:/dev
     volumes:
-      - /home/piuslim373/all_ws/test/tmms_ws:/home/htxgrrt/.htxgrrt/bin/tmms_ws
-      - /home/piuslim373/all_ws/test/z1_controller:/home/htxgrrt/.htxgrrt/bin/z1_controller
+      # Requires: export TMMS_WS_PATH=/abs/path/to/tmms_ws
+      - ${TMMS_WS_PATH:?set TMMS_WS_PATH to the absolute path of your tmms_ws checkout, e.g. export TMMS_WS_PATH=/abs/path/to/tmms_ws}:/home/htxgrrt/.htxgrrt/bin/tmms_ws
