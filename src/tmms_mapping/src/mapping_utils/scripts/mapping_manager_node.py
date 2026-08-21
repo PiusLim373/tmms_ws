@@ -37,10 +37,6 @@ session start is the pose of camera_init, and the resulting tree is:
 This replaces the identity map->camera_init / map->odom statics fast_lio.launch.py used to
 publish, which were only ever correct when odom happened to be zero; at any other odom pose
 the map and the robot model were displaced by exactly that pose.
-
-Because the lookup is what anchors everything, quadruped_controller's TF MUST be running.
-If /quadruped_controller/set_tf_enabled has been set false, start_mapping fails with that as
-the reported reason rather than producing a silently misplaced map.
 """
 
 import os
@@ -276,9 +272,7 @@ class MappingManagerNode(Node):
             except TransformException as exc:
                 response.success = False
                 response.message = (
-                    f'could not look up {parent} -> {imu}: {exc}. '
-                    'quadruped_controller must be publishing TF -- check '
-                    '/quadruped_controller/set_tf_enabled.')
+                    f'could not look up {parent} -> {imu}: {exc}.')
                 return response
 
             # Anchor before spawning, so camera_init is already placed by the time FAST-LIO
