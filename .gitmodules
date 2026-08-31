@@ -14,3 +14,7 @@
 	path = src/tmms_mapping/src/FAST-LIVO2-ROS2
 	url = git@github.com:PiusLim373/FAST-LIVO2-ROS2.git
 	branch = tmms
+[submodule "src/tmms_navigation/navigation2"]
+	path = src/tmms_navigation/navigation2
+	url = git@github.com:PiusLim373/navigation2.git
+	branch = tmms
