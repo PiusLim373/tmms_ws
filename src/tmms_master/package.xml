@@ -17,6 +17,12 @@
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
 
+  <!-- launch/fast_lio.launch.py and launch/fast_livo.launch.py bring these up; this also
+       makes colcon build them first. No cycle: none of them depend on tmms_master. -->
+  <exec_depend>mapping_utils</exec_depend>
+  <exec_depend>fast_lio</exec_depend>
+  <exec_depend>fast_livo</exec_depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

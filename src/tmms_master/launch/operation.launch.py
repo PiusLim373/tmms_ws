@@ -36,17 +36,6 @@ def generate_launch_description():
     urdf_path = os.path.join(description_share, 'urdf', 'tmms_description.urdf.xacro')
     robot_description = ParameterValue(Command(['xacro ', urdf_path]), value_type=str)
 
-    # RTAB-Map tuning: point-to-plane ICP registration + ground/ceiling height
-    # filtering so the 3D lidar's floor and roof returns aren't mapped as obstacles.
-    rtabmap_args = (
-        '--Reg/Strategy 1 --Grid/Sensor 2 '
-        '--Icp/PointToPlane true --Icp/VoxelSize 0.1 --Icp/Iterations 10 '
-        '--Icp/MaxCorrespondenceDistance 0.1 '
-        '--Grid/MinGroundHeight -0.1 --Grid/MaxGroundHeight 0.1 '
-        '--Grid/MaxObstacleHeight 1.5 --Grid/RangeMin 0.75 '
-        '--Grid/RangeMax 15.0 --Grid/MinClusterSize 20 '
-    )
-
     return LaunchDescription([
         # Publishes robot_description + TF for the URDF's kinematic tree from
         Node(
@@ -84,6 +73,18 @@ def generate_launch_description():
                     name='quadruped_controller',
                     output='screen'),
 
+                # Starts/stops fast_lio.launch.py on request. That launch is deliberately
+                # NOT included here -- mapping is occasional, and map_downsampler_node
+                # voxelising /Laser_map at 1 Hz is real CPU to burn the rest of the time.
+                # Listed after quadruped_controller because it anchors camera_init from a
+                # live odom -> dog_imu_link lookup, which needs that node's TF flowing.
+                Node(
+                    package='mapping_utils',
+                    executable='mapping_manager_node.py',
+                    name='mapping_manager',
+                    output='screen',
+                    parameters=[{'maps_dir': '/home/htxgrrt/.htxgrrt/maps'}]),
+
                 # Rosbridge WebSocket server (exposes ROS2 topics over wss://
                 # — the dashboard now loads over https, and browsers block a
                 # plain ws:// connection from an https page as mixed content)
@@ -107,14 +108,5 @@ def generate_launch_description():
                         '/launch/rosbag_record.launch.py',
                     ])),
 
-                # RTAB-Map SLAM (lidar-based, localization mode by default)
-                IncludeLaunchDescription(
-                    PythonLaunchDescriptionSource([
-                        get_package_share_directory('tmms_master'),
-                        '/launch/rtabmap.launch.py',
-                    ]),
-                    launch_arguments={
-                        'args': rtabmap_args,
-                    }.items()),
             ]),
     ])

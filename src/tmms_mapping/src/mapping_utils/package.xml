@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mapping_utils</name>
+  <version>0.0.0</version>
+  <description>
+    Converts the B2's RoboSense (rslidar_sdk) XYZIRT PointCloud2 on /rslidar_points into the
+    Velodyne XYZIRT layout consumed by FAST-LIO2 / FAST-LIVO2, published on
+    /converted_rslidar_points: float32 `time` relative to the scan start, uint16 `ring`,
+    float32 `intensity`, NaN points removed, and header.stamp rewritten from the RoboSense
+    scan-END convention to the scan-START convention both mappers assume.
+    Derived from the ROS 2 port of HViktorTsoi/rs_to_velodyne.
+
+    Also carries map_downsampler_node, which voxel-downsamples FAST-LIO's accumulated
+    /Laser_map (pcl::PointXYZINormal, 48 B/pt) onto /downsampled_fastlio_map
+    (pcl::PointXYZI, 32 B/pt) so a live coverage view can be streamed to Lichtblick over
+    rosbridge, which the raw topic is far too large for.
+
+    And mapping_manager_node (Python), which owns a mapping session end to end: it starts
+    and stops tmms_master's fast_lio.launch.py on request, names the output .pcd, saves it
+    via /map_save on stop, and latches the static odom -> camera_init that anchors FAST-LIO's
+    world frame to the robot's odometry.
+  </description>
+
+  <maintainer email="piuslim373@gmail.com">piuslim373</maintainer>
+  <!-- Upstream HViktorTsoi/rs_to_velodyne ships no LICENSE file; left as TODO rather than
+       inventing one. -->
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>pcl_conversions</depend>
+
+  <build_depend>libpcl-all-dev</build_depend>
+  <build_export_depend>libpcl-all-dev</build_export_depend>
+  <exec_depend>libpcl-common</exec_depend>
+  <exec_depend>libpcl-filters</exec_depend>  <!-- VoxelGrid, map_downsampler_node -->
+
+  <!-- mapping_manager_node only. exec_depend rather than depend: it is an installed script,
+       nothing is compiled or generated against these at build time. -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>tmms_msgs</exec_depend>
+
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

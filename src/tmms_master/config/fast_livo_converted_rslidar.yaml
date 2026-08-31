@@ -1,0 +1,192 @@
+# FAST-LIVO2 config for the B2 quadruped: RoboSense RS32 + front RealSense D4xx + dog IMU.
+#
+# Consumes /converted_rslidar_points from the lidar_converter node -- NOT /rslidar_points
+# directly. The converter rewrites the RoboSense point layout into the Velodyne one and fixes
+# the scan-END header stamp that RoboSense emits (FAST-LIVO2 assumes scan START).
+#
+# Launch with:  ros2 launch tmms_master fast_livo.launch.py
+#
+# The RealSense is NOT started by that launch file -- it runs in its own container
+# (app/tmms_realsense). img_topic below must already be publishing before you start mapping.
+#
+# fast_livo.launch.py overrides common.lid_topic from its `output_topic` arg -- the same arg
+# that configures the converter -- so the two can never drift. The value below is the
+# documented default for running the node standalone.
+#
+# Unlike the FAST-LIO2 setup, the camera intrinsics live in THIS file too (the `camera:` block
+# below) rather than a separate camera_*.yaml -- vk::camera_loader reads them off the same node,
+# so splitting them buys nothing.
+#
+# NOTE: every float MUST be written with an explicit decimal point. LIVMapper's try_declare
+# re-reads an already-declared parameter with get_value<double>(), so a YAML int override
+# (e.g. `blind: 1` instead of `1.0`) throws InvalidParameterTypeException at startup.
+/**:
+  ros__parameters:
+    common:
+      lid_topic: "/converted_rslidar_points"                 # lidar_converter output
+      img_topic: "/camera/camera_front/color/image_raw"      # raw rgb8, 848x480 @ 30 Hz
+      imu_topic: "/dog_imu_raw"                              # already m/s^2 + rad/s @ 500 Hz
+      img_en: 1                                              # 1 = LIVO, 0 = LIO-only (A/B the camera)
+      lidar_en: 1
+      ros_driver_bug_fix: false
+      # MUST be false. When true, initializeSubscribersAndPublishers (LIVMapper.cpp:309)
+      # subscribes to CompressedImage instead of Image, and img_cbk early-returns on every raw
+      # frame -- the VIO silently never sees an image. avia_metacamedu.yaml sets it true only
+      # because that rig published JPEG.
+      enable_image_processing: false
+      # The RealSense runs at 30 Hz against a 10 Hz lidar. LIVO's data-cut splits every scan
+      # at the image timestamps, so 3 images per scan leaves each LIO sub-update with only a
+      # few hundred points (observed: as few as 7), which is not enough to constrain the EKF
+      # and the state free-runs on IMU. 3 brings the camera to ~10 Hz, one image per scan,
+      # matching every dataset this algorithm ships configs for.
+      img_decimate: 3
+
+    # Read by vk::camera_loader::loadFromRosNs(node, "camera", ...) via LIVMapper.cpp:204,
+    # which asks for camera.model / camera.fx / ... Do NOT use the cam_model / cam_fx naming
+    # from camera_NTU_VIRAL.yaml -- that is stale ROS1 leftovers and throws
+    # "Camera model not correctly specified."
+    camera:
+      model: Pinhole
+      width: 848
+      height: 480
+      scale: 1.0
+      # From /camera/camera_front/color/camera_info in the bag.
+      fx: 601.9911499023438
+      fy: 601.486083984375
+      cx: 428.6363220214844
+      cy: 243.93075561523438
+      # camera_info reports distortion_model plumb_bob with D = all zeros: the RealSense
+      # publishes colour already rectified, so there is nothing to undistort.
+      d0: 0.0
+      d1: 0.0
+      d2: 0.0
+      d3: 0.0
+
+    extrin_calib:
+      # --- IMU <- LiDAR ---------------------------------------------------------------------
+      # Lidar pose w.r.t. IMU (p_imu = extrinsic_R * p_lidar + extrinsic_T), from
+      # tmms_description.urdf.xacro:
+      #   (base_link->rslidar)      [0.34218, 0,        0.17851]
+      # - (base_link->dog_imu_link) [0,      -0.02341,   0.04927]
+      # Same value the working FAST-LIO2 config uses, where it was validated against a
+      # ground-plane fit of the real cloud.
+      extrinsic_T: [0.34218, 0.02341, 0.12924]
+      extrinsic_R: [1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0]
+
+      # --- camera <- LiDAR ------------------------------------------------------------------
+      # vio.cpp:58 composes Rci = Rcl * Rli, so Rcl/Pcl is the camera_FROM_lidar transform:
+      #     p_camera = Rcl * p_lidar + Pcl
+      # That is the INVERSE of the URDF chain (which gives the camera's pose in the lidar
+      # frame). Getting this backwards is the classic FAST-LIVO2 misconfiguration.
+      #
+      # Derived by composing, then inverting:
+      #   rslidar -> camera_front_link          urdf.xacro:833 + tmms_env.env
+      #                                         xyz [0.119530, 0.004288, -0.115017]
+      #                                         rpy [-0.001625, -0.026597, 0.003296]
+      #   camera_front_link -> ..._color_optical_frame   etc/camera_link_to_optical_frame
+      #                                         xyz [0, 0.015, 0], quat [-0.502,0.499,-0.499,0.500]
+      #
+      # Sanity check: a point 5 m straight ahead of the lidar projects to pixel (435, 245) on
+      # the 848x480 image -- essentially the principal point (428.6, 243.9). This validates the
+      # rotation convention, the composition order and the inversion together.
+      #
+      # These are URDF-NOMINAL values, not a target-based calibration. If colour bleeds across
+      # depth discontinuities in the map, this block is the first suspect.
+      Rcl: [0.007200190, -0.999967136, 0.003726116,
+            0.024610182, -0.003547882, -0.999690828,
+            0.999671194, 0.007289664, 0.024583827]
+      Pcl: [0.018855637, -0.117877822, -0.116754367]
+
+    time_offset:
+      # All three topics in the bag share one epoch (verified: lidar/camera/IMU header stamps
+      # all sit in 1786092808-830), so there is no clock-domain correction to make.
+      #
+      # Do NOT put the RoboSense 100 ms scan-end offset in lidar_time_offset. The converter
+      # already fixes it properly by rewriting the lidar header stamp to the scan start;
+      # doing it here as well would double-correct.
+      lidar_time_offset: 0.0
+      imu_time_offset: 0.0
+      img_time_offset: 0.0
+      exposure_time_init: 0.0
+
+    preprocess:
+      lidar_type: 2                 # VELO16 path -> velodyne_ros::Point {x,y,z,intensity,time,ring}
+      scan_line: 32                 # RS32; converter drops any point with ring >= this
+      point_filter_num: 3           # 57600 pts/scan -> ~19k into the KF.
+                                    # Avoid 4: gcd(32,4)=4, so i%4 would only ever keep
+                                    # rings 0,4,8,... 3 is coprime with 32 and samples evenly.
+      filter_size_surf: 0.1         # indoor scene; 0.5 is too coarse
+      blind: 0.5                    # robot self-returns measured at 3D range 0.25-0.29 m
+      feature_extract_enabled: false  # FAST-LIVO2 works on raw surf points
+
+    vio:
+      max_iterations: 5
+      outlier_threshold: 1000       # 78 100 156 200 500 700 infinite
+      img_point_cov: 100            # 100 1000
+      patch_size: 8
+      patch_pyrimid_level: 4
+      normal_en: true
+      raycast_en: false
+      inverse_composition_en: false
+      exposure_estimate_en: true    # RealSense runs auto-exposure, so estimate it online
+      inv_expo_cov: 0.1
+      # grid_size <= 10 means vio.cpp:75 derives it as height/grid_n_height instead:
+      # 480/17 = 28 px cells -> a 31 x 18 grid over the 848x480 image. Sensible as-is.
+      grid_size: 5
+      grid_n_height: 17
+
+    imu:
+      imu_en: true
+      imu_int_frame: 30
+      acc_cov: 0.5                  # raised over the Livox defaults for foot-impact accel
+      gyr_cov: 0.3                  # spikes; raise further if the map smears while trotting
+      gravity_est_en: true
+      ba_bg_est_en: true
+      # NOTE: b_acc_cov / b_gyr_cov appear in every shipped config but are read NOWHERE in
+      # this port, so they are omitted here rather than implying they do something.
+
+    lio:
+      # NOTE: the key is min_iterations, NOT max_iterations. voxel_map.cpp:78 reads
+      # "lio.min_iterations" into voxel_config.max_iterations_; "lio.max_iterations" (which
+      # every shipped config sets) is read by nothing and silently ignored.
+      min_iterations: 5
+      dept_err: 0.02
+      beam_err: 0.05
+      min_eigen_value: 0.0025
+      voxel_size: 0.5
+      max_layer: 2
+      max_points_num: 50
+      layer_init_num: [5, 5, 5, 5, 5]
+
+    local_map:
+      map_sliding_en: false         # 104 s indoor run fits in memory; no sliding needed
+      half_map_size: 100
+      sliding_thresh: 8.0
+
+    uav:
+      imu_rate_odom: false
+      gravity_align_en: true        # rotate the map so Z comes out vertical
+
+    publish:
+      dense_map_en: true
+      pub_effect_point_en: false
+      pub_plane_en: false
+      pub_scan_num: 1
+      blind_rgb_points: 0.0
+
+    evo:
+      seq_name: "tmms_rslidar"
+      pose_output_en: false
+
+    pcd_save:
+      # savePCD() (LIVMapper.cpp:641) runs only AFTER run()'s rclcpp::ok() loop exits, i.e. on
+      # Ctrl-C. Killing the launch harder than SIGINT loses the whole map.
+      # Output path is hardcoded to ROOT_DIR/Log/PCD/ -> src/FAST-LIVO2-ROS2/Log/PCD/
+      #   all_raw_points.pcd          full RGB cloud
+      #   all_downsampled_points.pcd  voxel-filtered at filter_size_pcd
+      pcd_save_en: true
+      colmap_output_en: false       # needs interval = -1
+      filter_size_pcd: 0.05
+      interval: -1                  # -1 = accumulate everything into ONE pcd
