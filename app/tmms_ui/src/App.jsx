@@ -10,6 +10,7 @@ import { Z1ArmWidget } from './components/widgets/Z1ArmWidget'
 import { ResizeHandle } from './components/ui/ResizeHandle'
 import { RecordingsPage } from './components/RecordingsPage'
 import { MappingPage } from './components/MappingPage'
+import { NavigationPage } from './components/NavigationPage'
 
 export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
@@ -141,6 +142,8 @@ export default function App() {
         {page === 'recordings' && <RecordingsPage />}
 
         {page === 'mapping' && <MappingPage />}
+
+        {page === 'navigation' && <NavigationPage onNavigate={setPage} />}
       </div>
 
       {/* ── Footer (40px) ── */}
