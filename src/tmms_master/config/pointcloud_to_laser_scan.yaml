@@ -1,0 +1,50 @@
+# Flattens the RoboSense 3D cloud into the 2D sensor_msgs/LaserScan that nav2_amcl
+# needs -- AMCL has no PointCloud2 path, and uses only x/y/yaw of the laser pose.
+#
+# Input is /rslidar_points (raw, rslidar_sdk on pc1) rather than
+# /converted_rslidar_points, because the converter only runs inside
+# fast_lio.launch.py -- i.e. during mapping. Navigation needs a scan whenever the
+# robot is up, so it has to come off the driver's own topic.
+#
+# Why target_frame is base_footprint and not rslidar:
+# pointcloud_to_laserscan transforms the cloud into target_frame BEFORE applying
+# the min_height/max_height slice, so the slab is defined in whatever frame is named
+# here. quadruped_controller already splits the chain so that base_footprint is flat --
+# odom -> base_footprint carries planar x/y/yaw only (setRPY(0,0,yaw), z=0), while
+# base_footprint -> base_link carries the gait's roll/pitch AND body_height. Slicing in
+# base_footprint therefore rejects both the tilt and the vertical bob for free; slicing
+# in rslidar would tilt the slab with the body and walls would drop out of the slice
+# every stride (error grows as range*sin(pitch) -- ~0.44 m at 5 m for 5 deg of pitch).
+pointcloud_to_laserscan:
+  ros__parameters:
+    target_frame: base_footprint
+
+    # The lookup is rslidar -> base_footprint, which resolves entirely inside the
+    # base_footprint -> base_link -> rslidar subtree, so it depends on
+    # quadruped_controller's tilt TF (stamped now()) and the static URDF joint --
+    # not on /dog_odom. 0.1 s absorbs the RoboSense scan-END header stamp.
+    transform_tolerance: 0.1
+
+    # Metres above the GROUND PLANE, since base_footprint is pinned to z=0. Kept
+    # deliberately thick: a thin slab is what makes quadruped AMCL flicker.
+    min_height: 0.40
+    max_height: 0.80
+
+    # Full 360 deg -- the RS is a spinning lidar. ~0.5 deg gives 722 beams, well above
+    # AMCL's max_beams subsampling.
+    angle_min: -3.14159
+    angle_max: 3.14159
+    angle_increment: 0.0087
+
+    scan_time: 0.1        # RS spins at 10 Hz
+
+    # Ranges are measured from the base_footprint origin, so range_min has to clear the
+    # body, not the lidar. The nav2 footprint corners reach 0.492 m
+    # (sqrt(0.45^2 + 0.2^2)), so 0.5 m trims self-hits from the B2 shell and the Z1 arm.
+    # Lower it if the robot ends up blind to close obstacles.
+    range_min: 0.5
+    range_max: 30.0
+
+    # AMCL treats inf as "no return" correctly; inf_epsilon is unused while use_inf is true.
+    use_inf: true
+    inf_epsilon: 1.0

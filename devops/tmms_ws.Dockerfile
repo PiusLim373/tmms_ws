@@ -31,11 +31,12 @@ RUN apt-get update && \
     ros-jazzy-librealsense2* \
     ros-jazzy-realsense2-* \
     ros-jazzy-navigation2 \
-    ros-jazzy-nav2-bringup
-
-RUN apt-get install -y \
+    ros-jazzy-nav2-bringup \
     libpcl-dev \
-    libeigen3-dev
+    libeigen3-dev \
+    ros-jazzy-yasmin \
+    ros-jazzy-yasmin-* \
+    ros-jazzy-pointcloud-to-laserscan
 
 # Setup ROS environment
 SHELL ["/bin/bash", "-c"]
@@ -65,8 +66,10 @@ RUN echo "PS1='\\[\\033[1;38;2;85;52;128m\\]\\u@\\h\\[\\033[00m\\]:\\[\\033[00;3
 # Some shortcuts aliases for convenience
 # check disk usage of directories
 RUN echo "alias dir_du='du -h --max-depth=1 | sort -hr'" >> /home/htxgrrt/.bashrc
-# build in Release mode
-RUN echo "alias build_all='colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release'" >> /home/htxgrrt/.bashrc
+# build in Release mode, skipping tests and linters
+RUN echo "alias build_all='colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF'" >> /home/htxgrrt/.bashrc
+# same, but with tests and linters enabled
+RUN echo "alias build_all_test='colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON'" >> /home/htxgrrt/.bashrc
 # tar the install folder
 RUN echo "alias tar_install='tar -cvzf install.tar.gz install/'" >> /home/htxgrrt/.bashrc
 
@@ -75,7 +78,7 @@ RUN mkdir -p /home/htxgrrt/.htxgrrt/tmp
 
 # build and install LivoxSDK2, required to build fastlio, runtime not needed
 RUN cd /home/htxgrrt/.htxgrrt/tmp && \
-    git clone https://github.com/Livox-SDK/Livox-SDK2.git && \
+    git clone --depth=1 https://github.com/Livox-SDK/Livox-SDK2.git && \
     cd Livox-SDK2 && \
     mkdir build && cd build && \
     cmake .. && \

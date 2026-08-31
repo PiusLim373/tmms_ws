@@ -16,6 +16,21 @@
   <exec_depend>tmms_description</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
+  <exec_depend>pointcloud_to_laserscan</exec_depend>
+
+  <!-- launch/{bringup,localization,navigation}.launch.py are local forks of nav2_bringup's
+       launch files, so nav2_bringup itself is no longer needed, and dropping it sheds its
+       ros_gz_bridge, ros_gz_sim, nav2_minimal_tb3_sim, nav2_minimal_tb4_sim, slam_toolbox
+       and diff_drive_controller deps. `navigation2` is the metapackage covering every nav2
+       runtime node the forks reference; rclcpp_components provides the container. -->
+  <exec_depend>navigation2</exec_depend>
+  <exec_depend>rclcpp_components</exec_depend>
+
+  <!-- The two nodes that sit between the UI and nav2: localization_manager gates map loads
+       and initial poses, tmms_yasmin sequences navigation goals. Listed so colcon builds
+       them before this package. No cycle: neither depends on tmms_master. -->
+  <exec_depend>localization_manager</exec_depend>
+  <exec_depend>tmms_yasmin</exec_depend>
 
   <!-- launch/fast_lio.launch.py and launch/fast_livo.launch.py bring these up; this also
        makes colcon build them first. No cycle: none of them depend on tmms_master. -->
