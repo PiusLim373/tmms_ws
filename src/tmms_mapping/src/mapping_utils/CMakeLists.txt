@@ -20,9 +20,15 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)          # map_flattener_node's OccupancyGrid
+find_package(std_msgs REQUIRED)          # map_flattener_node's /flattened_map_info
+find_package(std_srvs REQUIRED)          # Trigger, map_flattener_node's ~/republish_map
+find_package(rcl_interfaces REQUIRED)    # map_flattener_node's ParameterDescriptor
+find_package(tmms_msgs REQUIRED)         # StringTrigger, the ~/load_pcd services
 find_package(pcl_conversions REQUIRED)
-# `io` not needed: no PCD read/write here. `filters` is for map_downsampler_node's VoxelGrid.
-find_package(PCL REQUIRED COMPONENTS common filters)
+# `filters` is for the VoxelGrid / PassThrough / RadiusOutlierRemoval; `io` for loadPCDFile,
+# which both map_flattener_node and map_downsampler_node's ~/load_pcd need.
+find_package(PCL REQUIRED COMPONENTS common filters io)
 
 add_executable(lidar_converter_node src/lidar_converter_node.cpp)
 ament_target_dependencies(lidar_converter_node rclcpp sensor_msgs pcl_conversions)
@@ -32,11 +38,17 @@ target_link_libraries(lidar_converter_node ${PCL_LIBRARIES})
 # -march=native there, which ABI-mismatches against the distro-built libpcl.
 
 add_executable(map_downsampler_node src/map_downsampler_node.cpp)
-ament_target_dependencies(map_downsampler_node rclcpp sensor_msgs pcl_conversions)
+ament_target_dependencies(map_downsampler_node rclcpp sensor_msgs pcl_conversions tmms_msgs)
 target_include_directories(map_downsampler_node PRIVATE ${PCL_INCLUDE_DIRS})
 target_link_libraries(map_downsampler_node ${PCL_LIBRARIES})
 
-install(TARGETS lidar_converter_node map_downsampler_node
+add_executable(map_flattener_node src/map_flattener_node.cpp)
+ament_target_dependencies(map_flattener_node
+  rclcpp sensor_msgs nav_msgs std_msgs std_srvs rcl_interfaces pcl_conversions tmms_msgs)
+target_include_directories(map_flattener_node PRIVATE ${PCL_INCLUDE_DIRS})
+target_link_libraries(map_flattener_node ${PCL_LIBRARIES})
+
+install(TARGETS lidar_converter_node map_downsampler_node map_flattener_node
   DESTINATION lib/${PROJECT_NAME})
 
 # mapping_manager_node is Python -- it is process orchestration (spawn/signal/reap a

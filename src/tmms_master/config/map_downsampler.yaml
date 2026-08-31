@@ -1,8 +1,12 @@
-# map_downsampler config: voxel-downsamples FAST-LIO's /Laser_map for live streaming to
-# Lichtblick over rosbridge.
+# map_downsampler config: voxel-downsamples point clouds for streaming to Lichtblick over
+# rosbridge. Two sources, one filter:
 #
-# Launch with:  ros2 launch tmms_master fast_lio.launch.py
-# (fast_lio.launch.py starts the node by default; enable_map_downsampler:=false turns it off.)
+#   /Laser_map            -> /downsampled_fastlio_map   live, during a mapping session
+#   ~/load_pcd <name>     -> /downsampled_pcd_map       a saved .pcd, during navigation
+#
+# Launch with:  ros2 launch tmms_master operation.launch.py
+# (the node runs for the whole session -- it is a pure subscriber, so it costs nothing while
+# FAST-LIO is not running, and its load service has to be reachable when it is not.)
 #
 # Why this is needed: /Laser_map is the WHOLE accumulated map re-serialised every second,
 # with no deduplication, at 48 bytes/point -- 41 MB per message at 855k points, and still
@@ -21,6 +25,16 @@
         input_topic: "/Laser_map"
         output_topic: "/downsampled_fastlio_map"
 
+        # ~/load_pcd reads <maps_dir>/pcd/<name>.pcd and publishes it here. maps_dir is the
+        # ROOT of the map store -- operation.launch.py overrides it with the container path;
+        # the node's own default is ~/.htxgrrt/maps.
+        pcd_output_topic: "/downsampled_pcd_map"
+
+        # A .pcd carries no frame. The live path passes FAST-LIO's header through untouched
+        # (camera_init); a loaded map is stamped with this instead, and must match whatever
+        # the 2D map it accompanies is anchored to.
+        pcd_frame_id: "map"
+
         # Metres, applied to all three axes. Rough guide for a typical indoor space, at the
         # 32 B/pt of the output:
         #   0.3  ->  ~150-300k pts   2.4-4.8 MB   more detail, still multi-MB on a big site
@@ -36,5 +50,6 @@
 
         # Extra throttle on top of the 1 Hz input. 0.0 = process every message. Raise it if
         # the filter starts costing real CPU on a very large map (the cost grows with the
-        # map, since each message is the full cloud).
+        # map, since each message is the full cloud). Applies to the LIVE path only --
+        # ~/load_pcd publishes once per call and is never throttled.
         min_publish_period_s: 0.0

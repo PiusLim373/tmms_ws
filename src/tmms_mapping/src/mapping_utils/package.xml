@@ -14,12 +14,22 @@
     Also carries map_downsampler_node, which voxel-downsamples FAST-LIO's accumulated
     /Laser_map (pcl::PointXYZINormal, 48 B/pt) onto /downsampled_fastlio_map
     (pcl::PointXYZI, 32 B/pt) so a live coverage view can be streamed to Lichtblick over
-    rosbridge, which the raw topic is far too large for.
+    rosbridge, which the raw topic is far too large for. Its ~/load_pcd service does the same
+    to a saved .pcd, onto /downsampled_pcd_map, giving 3D context during navigation.
+
+    And map_flattener_node, which turns one of those saved .pcd files into the 2D
+    nav_msgs/OccupancyGrid nav2 needs: a z-band pass-through plus radius outlier removal,
+    rasterised onto /flattened_map. The .pcd is chosen at runtime over ~/load_pcd and the
+    filter thresholds are live-tunable from the UI, so both outputs are transient_local and
+    published only on load and on change, with a per-rebuild JSON summary on
+    /flattened_map_info. Derived from LihanChen2004/pcd2pgm.
 
     And mapping_manager_node (Python), which owns a mapping session end to end: it starts
     and stops tmms_master's fast_lio.launch.py on request, names the output .pcd, saves it
     via /map_save on stop, and latches the static odom -> camera_init that anchors FAST-LIO's
-    world frame to the robot's odometry.
+    world frame to the robot's odometry. It owns the pcd/ half of the map store only -- the
+    2D .png + .yaml are written by the UI's map editor, since a flattened lidar map needs
+    hand cleanup before it is fit to navigate on.
   </description>
 
   <maintainer email="piuslim373@gmail.com">piuslim373</maintainer>
@@ -32,11 +42,21 @@
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>pcl_conversions</depend>
+  <depend>nav_msgs</depend>          <!-- OccupancyGrid, map_flattener_node -->
+  <depend>std_msgs</depend>          <!-- /flattened_map_info, map_flattener_node -->
+  <depend>rcl_interfaces</depend>    <!-- ParameterDescriptor ranges, map_flattener_node -->
+  <!-- Trigger, map_flattener_node's ~/republish_map. Promoted from the exec_depend it was as
+       mapping_manager_node's dependency: it is compiled against now, not just imported. -->
+  <depend>std_srvs</depend>
+  <!-- StringTrigger. A <depend> rather than the exec_depend it used to be: the two C++
+       ~/load_pcd services are compiled against the generated headers. -->
+  <depend>tmms_msgs</depend>
 
   <build_depend>libpcl-all-dev</build_depend>
   <build_export_depend>libpcl-all-dev</build_export_depend>
   <exec_depend>libpcl-common</exec_depend>
-  <exec_depend>libpcl-filters</exec_depend>  <!-- VoxelGrid, map_downsampler_node -->
+  <exec_depend>libpcl-filters</exec_depend>  <!-- VoxelGrid / PassThrough / RadiusOutlierRemoval -->
+  <exec_depend>libpcl-io</exec_depend>       <!-- loadPCDFile, both ~/load_pcd services -->
 
   <!-- mapping_manager_node only. exec_depend rather than depend: it is an installed script,
        nothing is compiled or generated against these at build time. -->
@@ -44,8 +64,6 @@
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf2_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>std_srvs</exec_depend>
-  <exec_depend>tmms_msgs</exec_depend>
 
 
   <test_depend>ament_lint_auto</test_depend>

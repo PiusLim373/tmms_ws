@@ -1,8 +1,17 @@
 // Voxel-downsamples FAST-LIO's accumulated map so it can be streamed to Lichtblick over
 // rosbridge, giving the operator a live view of which areas have already been covered.
 //
-// Input  /Laser_map                 (pcl::PointXYZINormal, point_step 48)
-// Output /downsampled_fastlio_map   (pcl::PointXYZI,       point_step 32)
+// Input   /Laser_map                (pcl::PointXYZINormal, point_step 48)
+// Output  /downsampled_fastlio_map  (pcl::PointXYZI,       point_step 32)
+//
+// Service ~/load_pcd                tmms_msgs/srv/StringTrigger, data = bare map name
+// Output  /downsampled_pcd_map      (pcl::PointXYZI,       point_step 32)
+//
+// The second pair is the navigation-time counterpart of the first: once a session is over
+// there is no /Laser_map, but the operator still wants the 3D scene alongside the 2D map they
+// just loaded. Same voxel grid, same reason -- a saved .pcd is every bit as unstreamable as
+// the live topic it came from. Latched rather than periodic, since a file on disk does not
+// change; see the pub_qos comment.
 //
 // Why this exists: publish_map() accumulates into pcl_wait_pub and never clears it, then
 // re-serialises the WHOLE buffer every tick (laserMapping.cpp:592-595) on a 1 Hz timer. The
@@ -25,24 +34,54 @@
 // Stateless: every input message is the full map, so re-filtering per message needs no
 // history and self-heals if FAST-LIO restarts and the map resets.
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <string>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/header.hpp>
+#include <tmms_msgs/srv/string_trigger.hpp>
 
 #include <pcl/common/common.h>  // pcl::getMinMax3D
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/io/pcd_io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 
 namespace lidar_converter
 {
+namespace
+{
+
+// Anchored, no dot or slash possible -- the whole path-traversal defence for load_pcd, which
+// joins the name straight onto pcd_dir. Same rule as map_flattener_node, mapping_manager_node
+// and ui_backend.js.
+bool isValidMapName(const std::string & name)
+{
+  return !name.empty() && std::all_of(name.begin(), name.end(), [](unsigned char c) {
+           return std::isalnum(c) != 0 || c == '_';
+         });
+}
+
+std::string trimmed(const std::string & s)
+{
+  const auto begin = s.find_first_not_of(" \t\r\n");
+  if (begin == std::string::npos) {
+    return "";
+  }
+  return s.substr(begin, s.find_last_not_of(" \t\r\n") - begin + 1);
+}
+
+}  // namespace
 
 class MapDownsamplerNode : public rclcpp::Node
 {
@@ -54,8 +93,16 @@ public:
     // Absolute: a relative name would resolve under the node namespace as
     // /map_downsampler/downsampled_fastlio_map.
     output_topic_ = declare_parameter<std::string>("output_topic", "/downsampled_fastlio_map");
+    pcd_output_topic_ = declare_parameter<std::string>("pcd_output_topic", "/downsampled_pcd_map");
     leaf_size_ = declare_parameter<double>("leaf_size", 0.5);
     min_publish_period_s_ = declare_parameter<double>("min_publish_period_s", 0.0);
+    // Root of the map store; ~/load_pcd reads <maps_dir>/pcd/<name>.pcd. Every node in the
+    // workspace takes the ROOT and derives the subfolder, so there is one path to configure.
+    maps_dir_ = expandUser(declare_parameter<std::string>("maps_dir", "~/.htxgrrt/maps"));
+    // A .pcd carries no frame. The live path passes FAST-LIO's header through untouched
+    // (camera_init); a loaded map is whatever the 2D map alongside it is anchored to, which
+    // for nav2 is `map`.
+    pcd_frame_id_ = declare_parameter<std::string>("pcd_frame_id", "map");
 
     if (leaf_size_ <= 0.0) {
       RCLCPP_ERROR(get_logger(), "leaf_size must be > 0 (got %.4f); falling back to 0.5",
@@ -85,13 +132,25 @@ public:
     const auto pub_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
 
     pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(output_topic_, pub_qos);
+    // Same profile, and for this topic latching is the entire delivery mechanism: a loaded
+    // .pcd is published exactly once and never again, so a subscriber that joins afterwards
+    // would otherwise see nothing at all.
+    pcd_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(pcd_output_topic_, pub_qos);
+
     sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
       input_topic_, sub_qos,
       std::bind(&MapDownsamplerNode::callback, this, std::placeholders::_1));
 
+    load_srv_ = create_service<tmms_msgs::srv::StringTrigger>(
+      "~/load_pcd",
+      std::bind(&MapDownsamplerNode::loadPcdCallback, this,
+                std::placeholders::_1, std::placeholders::_2));
+
     RCLCPP_INFO(get_logger(),
                 "map_downsampler: %s -> %s (leaf %.3f m, min_period %.2f s)",
                 input_topic_.c_str(), output_topic_.c_str(), leaf_size_, min_publish_period_s_);
+    RCLCPP_INFO(get_logger(), "map_downsampler: %s/pcd/<name>.pcd -> %s (frame %s)",
+                maps_dir_.c_str(), pcd_output_topic_.c_str(), pcd_frame_id_.c_str());
   }
 
 private:
@@ -144,8 +203,6 @@ private:
       last_pub_time_ = now;
     }
 
-    const auto t_start = std::chrono::steady_clock::now();
-
     // Field-matches x/y/z/intensity by name; the source's normal_x/y/z and curvature are
     // simply not mapped. FAST-LIO's intensity survives, so Lichtblick can still colour by it.
     //
@@ -154,34 +211,13 @@ private:
     // this node exists to deal with.
     auto in = std::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
     pcl::fromROSMsg(*msg, *in);
-    if (in->empty()) {
-      return;
-    }
 
-    if (!leafSizeIsSafe(*in)) {
-      return;
-    }
-
-    pcl::PointCloud<pcl::PointXYZI> out;
-    pcl::VoxelGrid<pcl::PointXYZI> vg;
-    vg.setInputCloud(in);
-    vg.setLeafSize(static_cast<float>(leaf_size_), static_cast<float>(leaf_size_),
-                   static_cast<float>(leaf_size_));
-    vg.filter(out);
-    if (out.empty()) {
-      return;
-    }
-
-    out.width = static_cast<std::uint32_t>(out.size());
-    out.height = 1;
-    out.is_dense = true;
-
-    sensor_msgs::msg::PointCloud2 out_msg;
-    pcl::toROSMsg(out, out_msg);
-    // Pass the header through untouched: the frame must stay whatever FAST-LIO published
+    // Header passed through untouched: the frame must stay whatever FAST-LIO published
     // (camera_init) or the cloud lands in the wrong place in the TF tree.
-    out_msg.header = msg->header;
-    pub_->publish(out_msg);
+    std::string summary;
+    if (!downsampleAndPublish(in, msg->header, pub_, msg->data.size(), summary)) {
+      return;
+    }
 
     // Printed so the reduction is visible and the leaf is tunable from the terminal. If the
     // output count stops climbing while the input keeps growing, saturation is working.
@@ -190,24 +226,138 @@ private:
     // deserialise + filter exceeds ~1 s the intervening messages are dropped and the OUTPUT
     // rate falls to 1/took. A downsampled topic publishing slower than 1 Hz is this, not a
     // bug -- the cost scales with the input map, which grows for the whole session.
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000, "%s", summary.c_str());
+  }
+
+  // Reads <maps_dir>/pcd/<name>.pcd and puts it out on pcd_output_topic_, voxelised exactly
+  // like the live path. Runs on the default callback group alongside the subscription, which
+  // serialises the two -- deliberate, since during navigation /Laser_map does not exist and
+  // during mapping nobody is loading a saved map.
+  void loadPcdCallback(
+    const tmms_msgs::srv::StringTrigger::Request::SharedPtr req,
+    tmms_msgs::srv::StringTrigger::Response::SharedPtr res)
+  {
+    const std::string name = trimmed(req->data);
+    if (!isValidMapName(name)) {
+      res->success = false;
+      res->message = "invalid map name '" + name + "': must match [A-Za-z0-9_]+";
+      RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+      return;
+    }
+
+    const std::string path = maps_dir_ + "/pcd/" + name + ".pcd";
+
+    // loadPCDFile field-matches by name, so a FAST-LIO PointXYZINormal file loads into
+    // PointXYZI with the normals and curvature simply dropped -- which is what we want on the
+    // wire anyway (32 B/pt instead of 48).
+    auto in = std::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
+    if (pcl::io::loadPCDFile<pcl::PointXYZI>(path, *in) == -1) {
+      res->success = false;
+      res->message = "could not read " + path;
+      RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+      return;
+    }
+
+    std_msgs::msg::Header header;
+    header.stamp = now();
+    header.frame_id = pcd_frame_id_;
+
+    // 32 B/pt is the on-disk-equivalent size, for a like-for-like ratio in the log.
+    const std::size_t input_bytes = in->size() * 32;
+
+    std::string summary;
+    if (!downsampleAndPublish(in, header, pcd_pub_, input_bytes, summary)) {
+      res->success = false;
+      res->message = "loaded " + path + " but nothing could be published; see the node log "
+                     "(usually leaf_size too small for the map extent)";
+      RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+      return;
+    }
+
+    res->success = true;
+    res->message = name + ": " + summary;
+    RCLCPP_INFO(get_logger(), "loaded %s -> %s | %s", path.c_str(), pcd_output_topic_.c_str(),
+                summary.c_str());
+  }
+
+  // The one filter path, shared by the live topic and the loaded file. Returns false and
+  // publishes nothing if the cloud is empty or the leaf is unsafe for its extent.
+  bool downsampleAndPublish(
+    const pcl::PointCloud<pcl::PointXYZI>::Ptr & in,
+    const std_msgs::msg::Header & header,
+    const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr & pub,
+    std::size_t input_bytes,
+    std::string & summary)
+  {
+    if (in->empty()) {
+      return false;
+    }
+    if (!leafSizeIsSafe(*in)) {
+      return false;
+    }
+
+    const auto t_start = std::chrono::steady_clock::now();
+
+    pcl::PointCloud<pcl::PointXYZI> out;
+    pcl::VoxelGrid<pcl::PointXYZI> vg;
+    vg.setInputCloud(in);
+    vg.setLeafSize(static_cast<float>(leaf_size_), static_cast<float>(leaf_size_),
+                   static_cast<float>(leaf_size_));
+    vg.filter(out);
+    if (out.empty()) {
+      return false;
+    }
+
+    out.width = static_cast<std::uint32_t>(out.size());
+    out.height = 1;
+    out.is_dense = true;
+
+    sensor_msgs::msg::PointCloud2 out_msg;
+    pcl::toROSMsg(out, out_msg);
+    out_msg.header = header;
+    pub->publish(out_msg);
+
     const double took = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - t_start).count();
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-                         "%zu -> %zu pts (%.1fx) | %.1f MB -> %.1f MB | took %.3f s",
-                         in->size(), out.size(),
-                         static_cast<double>(in->size()) / static_cast<double>(out.size()),
-                         static_cast<double>(msg->data.size()) / 1e6,
-                         static_cast<double>(out_msg.data.size()) / 1e6, took);
+
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "%zu -> %zu pts (%.1fx) | %.1f MB -> %.1f MB | took %.3f s",
+                  in->size(), out.size(),
+                  static_cast<double>(in->size()) / static_cast<double>(out.size()),
+                  static_cast<double>(input_bytes) / 1e6,
+                  static_cast<double>(out_msg.data.size()) / 1e6, took);
+    summary = buf;
+    return true;
+  }
+
+  // Only "~" and "~/..." -- enough for the maps_dir default, and it leaves the absolute path
+  // every launch file passes completely alone.
+  std::string expandUser(const std::string & path) const
+  {
+    if (path.empty() || path[0] != '~') {
+      return path;
+    }
+    const char * home = std::getenv("HOME");
+    if (home == nullptr) {
+      RCLCPP_WARN(get_logger(), "HOME is unset; cannot expand '%s'", path.c_str());
+      return path;
+    }
+    return std::string(home) + path.substr(1);
   }
 
   std::string input_topic_;
   std::string output_topic_;
+  std::string pcd_output_topic_;
+  std::string maps_dir_;
+  std::string pcd_frame_id_;
   double leaf_size_{0.5};
   double min_publish_period_s_{0.0};
   rclcpp::Time last_pub_time_{0, 0, RCL_ROS_TIME};
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pcd_pub_;
+  rclcpp::Service<tmms_msgs::srv::StringTrigger>::SharedPtr load_srv_;
 };
 
 }  // namespace lidar_converter
