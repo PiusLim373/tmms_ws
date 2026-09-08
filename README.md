@@ -28,7 +28,17 @@ devops/
 
 ## Setup
 
-Export `TMMS_WS_PATH` pointing at your checkout of this workspace:
+Clone the repository and pull in its submodules:
+
+```bash
+git clone git@github.com:PiusLim373/tmms_ws.git
+cd tmms_ws
+git submodule update --init --recursive
+```
+
+The submodules cover CycloneDDS/`rmw_cyclonedds`, FAST_LIO, FAST-LIVO2-ROS2 and the `tmms` branch of navigation2 — the workspace will not build without them.
+
+Then export `TMMS_WS_PATH` pointing at your checkout of this workspace:
 
 ```bash
 export TMMS_WS_PATH=/abs/path/to/tmms_ws
@@ -212,6 +222,15 @@ ssh unitree@192.168.123.165 mkdir -p /home/unitree/.htxgrrt/bags/ongoing_rosbags
 ssh unitree@192.168.123.165 mkdir -p /home/unitree/.htxgrrt/bags/rosbags
 ```
 
+Install Flask, which `reboot_manager.py` needs. It runs on the host under supervisor with the
+system `python3` (not in a venv and not in a container), and Ubuntu marks that interpreter
+externally-managed, so use the distro package rather than `pip`:
+
+```bash
+# inside robot PC5
+sudo apt install -y python3-flask
+```
+
 Set up supervisor (auto-launches/manages the containers on bootup and during runtime):
 
 ```bash
@@ -238,6 +257,14 @@ rsync -avz --delete <PATH TO TMMS_WS>/install/ unitree@192.168.123.165:/home/uni
 
 ```bash
 rsync -avz --delete app/tmms_ui/dist app/tmms_ui/ui_backend.js app/tmms_ui/scripts unitree@192.168.123.165:/home/unitree/.htxgrrt/bin/tmms_ui/
+```
+
+**tmms_reboot_manager** — the two rsyncs above only cover `install/` and the UI, so the host-side
+reboot manager has to be copied on its own whenever it changes:
+
+```bash
+scp app/tmms_ws/reboot_manager.py unitree@192.168.123.165:/home/unitree/.htxgrrt/bin/tmms_ws/
+ssh unitree@192.168.123.165 'sudo supervisorctl restart quadruped:tmms_reboot_manager'
 ```
 
 </details>
