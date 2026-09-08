@@ -140,6 +140,14 @@ def generate_launch_description():
                 # Rosbridge WebSocket server (exposes ROS2 topics over wss://
                 # — the dashboard now loads over https, and browsers block a
                 # plain ws:// connection from an https page as mixed content)
+                #
+                # respawn is what lets reboot_manager.py restart a wedged rosbridge with
+                # nothing but a SIGINT: launch brings the node back with these exact
+                # arguments, so the SSL paths and message limits do not have to be repeated
+                # in a second `ros2 launch` invocation that would then outlive this one. The
+                # XML applies the flag to both nodes it spawns (rosbridge_websocket and
+                # rosapi). It also self-heals an unattended crash, which is the failure this
+                # whole restart path exists for.
                 IncludeLaunchDescription(
                     AnyLaunchDescriptionSource([
                         get_package_share_directory('rosbridge_server'),
@@ -151,22 +159,8 @@ def generate_launch_description():
                         'keyfile': '/home/htxgrrt/.htxgrrt/certs/tmms_b2.key',
                         'max_message_size': '50000000',
                         'use_compression': 'true',
+                        'respawn': 'true',
                     }.items()),
-
-                # Full nav2 stack -- bringup.launch.py starts the component container and
-                # pulls in both halves (localization.launch.py, navigation.launch.py), which
-                # are local forks of nav2's. Do NOT point this at navigation.launch.py: that
-                # is only the navigation half and would come up with no map_server or AMCL.
-                #
-                # Unlike fast_lio.launch.py this IS included here: the UI's Load Map button
-                # needs map_server up to accept /map_server/load_map, and the state machine
-                # starts in Unlocalized, which means AMCL has to be running from boot. Both
-                # come up mapless and idle until a map is loaded.
-                IncludeLaunchDescription(
-                    PythonLaunchDescriptionSource([
-                        get_package_share_directory('tmms_master'),
-                        '/launch/bringup.launch.py',
-                    ])),
 
                 # Gatekeeper between the UI and nav2's localization services. The UI never
                 # calls nav2 directly: /map_load and /lichtblick_initialpose come here, get
@@ -205,5 +199,33 @@ def generate_launch_description():
                         '/launch/rosbag_record.launch.py',
                     ])),
 
+            ]),
+
+        # Full nav2 stack -- bringup.launch.py starts the component container and pulls in
+        # both halves (localization.launch.py, navigation.launch.py), which are local forks
+        # of nav2's. Do NOT point this at navigation.launch.py: that is only the navigation
+        # half and would come up with no map_server or AMCL.
+        #
+        # Unlike fast_lio.launch.py this IS included here: the UI's Load Map button needs
+        # map_server up to accept /map_server/load_map, and the state machine starts in
+        # Unlocalized, which means AMCL has to be running from boot. Both come up mapless
+        # and idle until a map is loaded.
+        #
+        # Its own timer at 10s rather than a member of the 5s block, so nav2 starts a clear
+        # 5s behind the nodes it needs already in place when lifecycle_manager_navigation
+        # autostarts: quadruped_controller's odom -> base_footprint TF for local_costmap,
+        # pointcloud_to_laserscan's /rslidar_scan for collision_monitor. Losing that race
+        # does not retry -- the manager aborts the bringup, bt_navigator is left INACTIVE,
+        # and every goal comes back "Action server is inactive. Rejecting the goal." until
+        # the stack is relaunched. Launched by hand against an already-running robot there
+        # is no race, which is why this only ever failed through this file.
+        TimerAction(
+            period=15.0,
+            actions=[
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource([
+                        get_package_share_directory('tmms_master'),
+                        '/launch/bringup.launch.py',
+                    ])),
             ]),
     ])
