@@ -7,6 +7,24 @@ const WS_URL = `${WS_PROTOCOL}://${window.location.hostname}:9090`
 
 export const ros = new Ros({ url: WS_URL })
 
+// roslib connects exactly once, in the Ros constructor, and never retries: on a dropped socket
+// it only flips isConnected and emits 'close'. Without this the singleton stays dead until the
+// operator hard-refreshes, which would make the header's "restart rosbridge" pointless — it
+// would kill the connection this app has no way to rebuild.
+//
+// Only the socket needs rebuilding. Every Topic re-issues its own subscribe/advertise once the
+// connection is back (roslib's per-Topic reconnect_on_close defaults to true), so subscribers
+// and publishers throughout this module heal on their own.
+//
+// Fixed interval, no backoff: a rosbridge respawn is a few seconds, and a 2s retry against a
+// port on the same machine costs nothing. 'error' is not handled separately — a failed connect
+// emits it and then 'close', so this covers both.
+let reconnectTimer = null
+ros.on('close', () => {
+  clearTimeout(reconnectTimer)
+  reconnectTimer = setTimeout(() => ros.connect(WS_URL), 2000)
+})
+
 // Memoized publishers — one Topic instance per topic name
 const _publishers = {}
 function getPublisher(name, messageType) {

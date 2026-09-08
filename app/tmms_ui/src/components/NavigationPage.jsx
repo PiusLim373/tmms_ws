@@ -1,12 +1,24 @@
+import { useRef, useState } from 'react'
 import { useKeyboard } from '../hooks/useKeyboard'
 import { useTopicActivity } from '../hooks/useTopicActivity'
 import { setQuadrupedPaused } from '../services/rosbridge'
+import { ResizeHandle } from './ui/ResizeHandle'
 import { LoadMapWidget } from './widgets/LoadMapWidget'
 import { NavigationControlWidget } from './widgets/NavigationControlWidget'
 import { QuadrupedWidget } from './widgets/QuadrupedWidget'
 
+// Smallest share of the column either of the top two widgets may be squeezed to.
+const MIN_SPAN = 0.12
+
 export function NavigationPage({ onNavigate }) {
   const { heldKeys } = useKeyboard()
+
+  // Boundary offsets from the top of the column, not per-widget heights: ResizeHandle reports
+  // an absolute fraction of its container, so storing boundaries lets each handle write its
+  // own state directly. Not persisted — same as Mapping and the dashboard's splits.
+  const rightColRef = useRef(null)
+  const [mapEnd, setMapEnd] = useState(0.32)   // bottom of LoadMapWidget
+  const [navEnd, setNavEnd] = useState(0.68)   // bottom of NavigationControlWidget
 
   // Subscribed ONCE here and passed down. All three widgets below read from
   // quadruped_main_status, and three separate subscriptions to the same 5Hz topic would
@@ -42,12 +54,26 @@ export function NavigationPage({ onNavigate }) {
         />
       </div>
 
-      {/* Right 35%, split three ways */}
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ height: '32%', flexShrink: 0, overflow: 'hidden', borderBottom: '1px solid var(--border)' }}>
+      {/* Right 35%, split three ways by two drag handles */}
+      <div
+        ref={rightColRef}
+        style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+      >
+        <div style={{ height: `${mapEnd * 100}%`, flexShrink: 0, overflow: 'hidden' }}>
           <LoadMapWidget currentMap={currentMap} onNavigate={onNavigate} />
         </div>
-        <div style={{ height: '36%', flexShrink: 0, overflow: 'hidden', borderBottom: '1px solid var(--border)' }}>
+
+        {/* The cross-clamp lives here rather than in the handle's min/max, which are static
+            constants and so cannot know where the other boundary currently sits. */}
+        <ResizeHandle
+          direction="v"
+          containerRef={rightColRef}
+          onResize={(pct) => setMapEnd(Math.min(pct, navEnd - MIN_SPAN))}
+          min={MIN_SPAN}
+          max={0.8}
+        />
+
+        <div style={{ height: `${(navEnd - mapEnd) * 100}%`, flexShrink: 0, overflow: 'hidden' }}>
           <NavigationControlWidget
             currentMap={currentMap}
             localizationStatus={localizationStatus}
@@ -55,6 +81,15 @@ export function NavigationPage({ onNavigate }) {
             isPaused={isPaused}
           />
         </div>
+
+        <ResizeHandle
+          direction="v"
+          containerRef={rightColRef}
+          onResize={(pct) => setNavEnd(Math.max(pct, mapEnd + MIN_SPAN))}
+          min={0.2}
+          max={1 - MIN_SPAN}
+        />
+
         <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <QuadrupedWidget
             heldKeys={heldKeys}

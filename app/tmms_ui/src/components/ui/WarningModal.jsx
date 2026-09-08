@@ -7,7 +7,10 @@ const TRANSITION_MESSAGES = {
   '4→3': { title: 'Robot will return to walk', body: 'Robot will resume balanced standing height before locomotion resumes.' },
 }
 
-export function WarningModal({ open, fromMode, toMode, title, body, onConfirm, onCancel }) {
+export function WarningModal({
+  open, fromMode, toMode, title, body, onConfirm, onCancel,
+  heading = 'MODE CHANGE WARNING',
+}) {
   if (!open) return null
 
   // Custom title/body (e.g. map-overwrite confirmations) bypass the
@@ -46,7 +49,7 @@ export function WarningModal({ open, fromMode, toMode, title, body, onConfirm, o
               color: 'var(--text-dim)',
             }}
           >
-            MODE CHANGE WARNING
+            {heading}
           </span>
         </div>
 

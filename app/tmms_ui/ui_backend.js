@@ -564,6 +564,49 @@ app.post('/api/mapping-state', (req, res) => {
   return res.status(400).json({ error: 'action must be "start" or "end"' })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// System reboot — thin proxy to reboot_manager.py on the host
+// ─────────────────────────────────────────────────────────────────────────────────────────
+//
+// The restarts themselves (docker exec into tmms_run, supervisorctl) are host operations this
+// container cannot perform — it has no docker socket and no supervisor. reboot_manager.py does
+// them and binds loopback only; this container is network_mode: host, so 127.0.0.1 reaches it.
+//
+// The proxy exists so the dashboard can call these same-origin. It is served over https, and a
+// direct fetch to the manager's http port would be blocked as mixed content — and giving the
+// manager its own TLS listener would instead mean exposing the reboot endpoints to the whole
+// network and making the operator accept a second self-signed cert.
+const REBOOT_MANAGER_URL = process.env.TMMS_REBOOT_URL || 'http://127.0.0.1:5055'
+const REBOOT_TARGETS = new Set(['rosbridge', 'tmms_ws'])
+
+// Upstream status codes are passed straight through: 409 (a reboot is already running) is a
+// state the dashboard renders differently from a failure.
+async function proxyToRebootManager(res, urlPath, init) {
+  try {
+    const upstream = await fetch(`${REBOOT_MANAGER_URL}${urlPath}`, init)
+    res.status(upstream.status).json(await upstream.json())
+  } catch (err) {
+    // Reachable in normal operation: the manager is a separate supervisor program and may be
+    // stopped or not yet deployed. The dashboard degrades to hiding the reboot controls, so
+    // this must answer rather than hang.
+    console.error(`[ui_backend] reboot manager ${urlPath} failed:`, err.message)
+    res.status(503).json({ error: 'reboot manager unreachable' })
+  }
+}
+
+app.get('/api/system/status', (_req, res) =>
+  proxyToRebootManager(res, '/status'))
+
+app.post('/api/system/reboot/:target', (req, res) => {
+  // Allowlisted here as well as in the manager so an unknown target never reaches the host
+  // service at all.
+  const { target } = req.params
+  if (!REBOOT_TARGETS.has(target)) {
+    return res.status(400).json({ error: `unknown reboot target: ${target}` })
+  }
+  proxyToRebootManager(res, `/reboot/${target}`, { method: 'POST' })
+})
+
 if (isProd) {
   app.use(express.static(path.join(__dirname, 'dist')))
 }
