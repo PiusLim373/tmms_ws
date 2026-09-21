@@ -63,7 +63,7 @@ class LocalizationManagerNode(Node):
         self.declare_parameter('yaw_std_max', 0.3)
         self.declare_parameter('acquire_threshold', 0.50)
         self.declare_parameter('lost_threshold', 0.40)
-        self.declare_parameter('lost_debounce_count', 5)
+        self.declare_parameter('lost_debounce_count', 15)
         self.declare_parameter('nomotion_attempts', 20)
         self.declare_parameter('nomotion_interval_sec', 0.3)
         self.declare_parameter('initial_cov_xy', 0.25)

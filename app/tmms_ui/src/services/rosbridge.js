@@ -94,7 +94,7 @@ export function subscribeCamera(topicName, callback) {
 // Generic — caller supplies the full request object and service type.
 // roslib v2: callService(request, successCb, errorCb) — successCb receives
 // the response values object directly.
-export function callRosService(serviceName, serviceType, request, onResult, onError) {
+export function callRosService(serviceName, serviceType, request, onResult, onError, timeoutSec) {
   if (!ros.isConnected) {
     onError?.('ROS not connected')
     return
@@ -103,7 +103,8 @@ export function callRosService(serviceName, serviceType, request, onResult, onEr
   svc.callService(
     request,
     (result) => onResult?.(result),
-    (error)  => onError?.(error)
+    (error)  => onError?.(error),
+    timeoutSec
   )
 }
 
@@ -128,11 +129,12 @@ export function startMapping(mapName, onResult, onError) {
   )
 }
 
-// Blocks for the whole /map_save write, which is seconds-to-minutes on a large map, and
-// roslib applies no timeout of its own. Callers need a visible "saving" state, not just a
-// disabled button.
+// Blocks for the whole /map_save write, which is seconds-to-minutes on a large map. rosbridge's
+// own default call timeout is only 5s, so this needs an explicit longer one -- 660s to clear
+// mapping_manager_node's map_save_timeout_sec (600s) + shutdown_timeout_sec (60s); keep in sync
+// with that file. Callers need a visible "saving" state too, not just a disabled button.
 export function stopMapping(onResult, onError) {
-  callRosService('/mapping_manager/stop_mapping', 'std_srvs/srv/Trigger', {}, onResult, onError)
+  callRosService('/mapping_manager/stop_mapping', 'std_srvs/srv/Trigger', {}, onResult, onError, 660)
 }
 
 // Hands the robot between the operator and nav2. Paused = teleop owns it and nav2's cmd_vel

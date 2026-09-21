@@ -193,7 +193,7 @@
           "pointShape": "square"
         },
         "/map": {
-          "visible": true,
+          "visible": false,
           "colorMode": "map",
           "frameLocked": false,
           "alpha": 0.5000000000000001

@@ -17,6 +17,7 @@
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
   <exec_depend>pointcloud_to_laserscan</exec_depend>
+  <exec_depend>pcl_ros</exec_depend>
 
   <!-- launch/{bringup,localization,navigation}.launch.py are local forks of nav2_bringup's
        launch files, so nav2_bringup itself is no longer needed, and dropping it sheds its

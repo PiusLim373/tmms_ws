@@ -95,8 +95,10 @@ class MappingManagerNode(Node):
         self.declare_parameter('imu_frame', 'dog_imu_link')
         self.declare_parameter('child_frame', 'camera_init')
         self.declare_parameter('tf_lookup_timeout_sec', 5.0)
-        self.declare_parameter('map_save_timeout_sec', 120.0)
-        self.declare_parameter('shutdown_timeout_sec', 20.0)
+        # Widened for large maps -- too short a timeout here made the map look lost when it was
+        # really still writing (see stopMapping's matching timeout in rosbridge.js).
+        self.declare_parameter('map_save_timeout_sec', 600.0)
+        self.declare_parameter('shutdown_timeout_sec', 60.0)
 
         # Session state. Everything that touches it holds _lock.
         self._lock = threading.Lock()

@@ -83,6 +83,28 @@ def generate_launch_description():
                     name='quadruped_controller',
                     output='screen'),
 
+                # Deletes the robot's own body from the cloud before nav2 sees it. The
+                # 360 deg RS32 sits 0.342 m forward of base_link, so the tail is ~1.04 m
+                # behind it -- outside the blind cone, inside the marking band.
+                Node(
+                    package='pcl_ros',
+                    executable='filter_crop_box_node',
+                    name='lidar_self_filter',
+                    output='screen',
+                    parameters=[{
+                        'input_frame': 'base_link',   # frame the BOX is expressed in
+                        'output_frame': 'rslidar',    # STVL needs the sensor frame back
+                        'min_x': -0.80, 'max_x': 0.55,
+                        'min_y': -0.33, 'max_y': 0.33,
+                        'min_z': -1.00, 'max_z': 0.80,  # z is from the trunk, not ground
+                        'negative': True,             # drop what is INSIDE the box
+                        'keep_organized': False,      # delete points, do not leave NaNs
+                    }],
+                    remappings=[
+                        ('input', '/rslidar_points'),
+                        ('output', '/rslidar_points_filtered'),
+                    ]),
+
                 # Flattens /rslidar_points into the 2D /rslidar_scan that nav2_amcl needs
                 # (AMCL is LaserScan-only). Subscribes to the raw driver topic rather than
                 # /converted_rslidar_points, because the converter only runs inside
@@ -199,33 +221,41 @@ def generate_launch_description():
                         '/launch/rosbag_record.launch.py',
                     ])),
 
-            ]),
-
-        # Full nav2 stack -- bringup.launch.py starts the component container and pulls in
-        # both halves (localization.launch.py, navigation.launch.py), which are local forks
-        # of nav2's. Do NOT point this at navigation.launch.py: that is only the navigation
-        # half and would come up with no map_server or AMCL.
-        #
-        # Unlike fast_lio.launch.py this IS included here: the UI's Load Map button needs
-        # map_server up to accept /map_server/load_map, and the state machine starts in
-        # Unlocalized, which means AMCL has to be running from boot. Both come up mapless
-        # and idle until a map is loaded.
-        #
-        # Its own timer at 10s rather than a member of the 5s block, so nav2 starts a clear
-        # 5s behind the nodes it needs already in place when lifecycle_manager_navigation
-        # autostarts: quadruped_controller's odom -> base_footprint TF for local_costmap,
-        # pointcloud_to_laserscan's /rslidar_scan for collision_monitor. Losing that race
-        # does not retry -- the manager aborts the bringup, bt_navigator is left INACTIVE,
-        # and every goal comes back "Action server is inactive. Rejecting the goal." until
-        # the stack is relaunched. Launched by hand against an already-running robot there
-        # is no race, which is why this only ever failed through this file.
-        TimerAction(
-            period=15.0,
-            actions=[
+                # Full nav2 stack -- bringup.launch.py starts the component container and
+                # pulls in both halves (localization.launch.py, navigation.launch.py),
+                # which are local forks of nav2's. Do NOT point this at
+                # navigation.launch.py: that is only the navigation half and would come up
+                # with no map_server or AMCL.
+                #
+                # Unlike fast_lio.launch.py this IS included here: the UI's Load Map button
+                # needs map_server up to accept /map_server/load_map, and the state machine
+                # starts in Unlocalized, which means AMCL has to be running from boot.
+                #
+                # A member of this 5s block rather than a timer of its own. It used to sit
+                # behind a separate 15s TimerAction meant to let quadruped_controller's
+                # odom -> base_footprint TF and pointcloud_to_laserscan's /rslidar_scan land
+                # first. That delay was guarding the wrong thing: both of those only have to
+                # exist by the time the costmaps activate, and neither was what failed.
+                #
+                # What actually failed is global_costmap's on_activate, which blocks on
+                # map -> base_footprint. That transform only exists once AMCL has BOTH a map
+                # and a pose (sendMapToOdomTransform is reachable only from laserReceived,
+                # and gated on first_map_received_ AND initial_pose_is_known_). Costmap2DROS
+                # gives up after initial_transform_timeout -- 60s by default -- returns
+                # FAILURE, planner_server fails with it, and lifecycle_manager aborts the
+                # whole navigation half with no retry, leaving bt_navigator INACTIVE and
+                # every goal answered with "Action server is inactive. Rejecting the goal."
+                # Launched by hand the robot is already localised, so the transform is there
+                # immediately, which is why this only ever failed through this file.
+                #
+                # No launch delay can fix that -- it is a 60s deadline on the operator, not
+                # an ordering race. The startup map plus amcl's set_initial_pose is what
+                # closes it; see the map_server block in config/nav2_params.yaml.
                 IncludeLaunchDescription(
                     PythonLaunchDescriptionSource([
                         get_package_share_directory('tmms_master'),
                         '/launch/bringup.launch.py',
                     ])),
+
             ]),
     ])

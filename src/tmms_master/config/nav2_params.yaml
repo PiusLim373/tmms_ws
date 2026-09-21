@@ -56,11 +56,25 @@ amcl:
     update_min_a: 0.05
     update_min_d: 0.05
 
-    # false is the default, spelled out because the state machine depends on it: AMCL
-    # comes up holding no pose and waits for /initialpose, which IS the Unlocalized
-    # state. It activates fine with no map, warning "Waiting for map...." every 2s
-    # until mapping_manager calls /map_server/load_map.
-    set_initial_pose: false
+    # NOT the default (false). Set true so AMCL seeds its filter from initial_pose at
+    # activation instead of sitting idle until /initialpose arrives.
+    #
+    # This exists to unblock nav2 bringup, not to localise the robot. AMCL only broadcasts
+    # map -> odom from sendMapToOdomTransform, which is reachable solely from laserReceived
+    # and gated on TWO flags: first_map_received_ and initial_pose_is_known_. This
+    # parameter opens the second; the startup map at the bottom of this file opens the
+    # first. Without both, global_costmap's on_activate never sees map -> base_footprint,
+    # times out after initial_transform_timeout (60s) and takes the whole navigation half
+    # down with it. See the comment above the bringup include in operation.launch.py.
+    #
+    # No initial_pose block is set, so the seed is x=y=z=yaw=0 -- deliberately meaningless.
+    # The operator still localises for real through the UI
+    # (/lichtblick_initialpose -> localization_manager -> /initialpose), and AMCL accepts
+    # the real map when it arrives because first_map_only defaults to false. Note that a
+    # new map does NOT re-init the particle filter, so the pre-localisation pose is
+    # garbage until that re-seed -- which is exactly what /localization_status must gate
+    # on. Do not infer "localised" from AMCL publishing TF; it publishes from boot now.
+    set_initial_pose: true
 
     save_pose_rate: 0.5
     tf_broadcast: true
@@ -113,118 +127,60 @@ controller_server:
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.3
     progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
+    goal_checker_plugins: ["general_goal_checker"]
     controller_plugins: ["FollowPath"]
     use_realtime_priority: false
 
     # Progress checker parameters
     progress_checker:
       plugin: "nav2_controller::PoseProgressChecker"
-      required_movement_radius: 0.5
-      required_movement_angle: 0.5
-      movement_time_allowance: 10.0
-    # Goal checker parameters
-    #precise_goal_checker:
-    #  plugin: "nav2_controller::SimpleGoalChecker"
-    #  xy_goal_tolerance: 0.25
-    #  yaw_goal_tolerance: 0.25
-    #  stateful: True
+      required_movement_radius: 0.2
+      required_movement_angle: 0.2
+      movement_time_allowance: 15.0
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 0.25
     FollowPath:
-      plugin: "nav2_mppi_controller::MPPIController"
-      time_steps: 56
-      model_dt: 0.05
-      batch_size: 2000
-      ax_max: 3.0
-      ax_min: -3.0
-      ay_max: 3.0
-      ay_min: -3.0
-      az_max: 3.5
-      vx_std: 0.2
-      vy_std: 0.2
-      wz_std: 0.3
-      vx_max: 0.6
-      vx_min: -0.6
-      vy_max: 0.6
-      wz_max: 0.8
-      iteration_count: 1
-      prune_distance: 1.7
-      transform_tolerance: 0.1
-      temperature: 0.3
-      gamma: 0.015
-      motion_model: "Omni"
-      visualize: true
-      regenerate_noises: true
-      TrajectoryVisualizer:
-        trajectory_step: 5
-        time_step: 3
-      AckermannConstraints:
-        min_turning_r: 0.2
-      critics: [
-        "ConstraintCritic", "CostCritic", "GoalCritic",
-        "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic",
-        "PathAngleCritic", "PreferForwardCritic"]
-      ConstraintCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 4.0
-      GoalCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 5.0
-        threshold_to_consider: 1.4
-      GoalAngleCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 3.0
-        threshold_to_consider: 0.5
-      PreferForwardCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 5.0
-        threshold_to_consider: 0.5
-      CostCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 3.81
-        near_collision_cost: 253
-        critical_cost: 300.0
-        consider_footprint: false
-        collision_cost: 1000000.0
-        near_goal_distance: 1.0
-        trajectory_point_step: 2
-      PathAlignCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 14.0
-        max_path_occupancy_ratio: 0.05
-        trajectory_point_step: 4
-        threshold_to_consider: 0.5
-        offset_from_furthest: 20
-        use_path_orientations: false
-      PathFollowCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 5.0
-        offset_from_furthest: 5
-        threshold_to_consider: 1.4
-      PathAngleCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 2.0
-        offset_from_furthest: 4
-        threshold_to_consider: 0.5
-        max_angle_to_furthest: 1.0
-        mode: 0
-      # TwirlingCritic:
-      #   enabled: true
-      #   twirling_cost_power: 1
-      #   twirling_cost_weight: 10.0
-
+      plugin: "dwb_core::DWBLocalPlanner"
+      debug_trajectory_details: False
+      min_vel_x: 0.0      # set to -0.2 for robot to reverse, but lidar is block, so not advisable
+      min_vel_y: -0.3
+      max_vel_x: 0.5
+      max_vel_y: 0.3
+      max_vel_theta: 0.8
+      min_speed_xy: 0.07
+      max_speed_xy: 0.5
+      min_speed_theta: 0.1
+      acc_lim_x: 3.0
+      acc_lim_y: 3.0
+      acc_lim_theta: 3.2
+      decel_lim_x: -3.0
+      decel_lim_y: -3.0
+      decel_lim_theta: -3.2
+      vx_samples: 20
+      vy_samples: 10
+      vtheta_samples: 20
+      sim_time: 1.7
+      linear_granularity: 0.05
+      angular_granularity: 0.025
+      short_circuit_trajectory_evaluation: True
+      limit_vel_cmd_in_traj: False
+      critics: ["RotateToGoal", "Oscillation", "PreferForward", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      ObstacleFootprint.scale: 0.02
+      PreferForward.scale: 1.0
+      PreferForward.theta_scale: 0.0
+      PathAlign.scale: 32.0
+      GoalAlign.scale: 24.0
+      PathAlign.forward_point_distance: 0.325
+      GoalAlign.forward_point_distance: 0.325
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+    
 local_costmap:
   local_costmap:
     ros__parameters:
@@ -233,40 +189,88 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
-      width: 3
-      height: 3
+      width: 5
+      height: 5
+      # Must stay equal to stvl_layer.voxel_size below. STVL flattens each occupied voxel
+      # column onto a SINGLE costmap cell -- UpdateROSCostmap() keys the flattened map on
+      # the voxel's world (x,y) and does one worldToMap() per entry -- so a voxel_size
+      # coarser than the resolution paints a dotted lethal band with holes between the
+      # marks. 0.02 is well under STVL's 0.05 default: finer marks, but ~6x the voxel
+      # columns to insert, decay and flatten every cycle, and every stray return gets its
+      # own cell at mark_threshold 0. Raise BOTH to 0.05 if this costs too much CPU.
       resolution: 0.02
       # robot_radius: 0.22
       footprint: "[ [0.45,0.25], [0.45,-0.25], [-0.70,-0.25], [-0.70,0.25] ]"
-      plugins: ["voxel_layer", "inflation_layer"]
+      plugins: ["stvl_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.70
-      voxel_layer:
-        plugin: "nav2_costmap_2d::VoxelLayer"
+        inflation_radius: 0.75
+      stvl_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
         enabled: True
-        publish_voxel_map: True
-        origin_z: 0.0
-        z_resolution: 0.1
-        z_voxels: 16
-        max_obstacle_height: 1.5
-        mark_threshold: 0
-        # Deliberately still the 3D cloud, not /rslidar_scan. Only AMCL is limited to
-        # LaserScan; the voxel layer wants the full cloud so it can catch overhangs and
-        # low obstacles that the scan's 0.40-0.80 m slab throws away. The costmap
-        # transforms into its global_frame through the whole tf chain, so gait tilt is
-        # already accounted for here and needs no stabilised frame.
-        observation_sources: rslidar
-        rslidar:
-          topic: /rslidar_points
-          data_type: "PointCloud2"
-          max_obstacle_height: 1.5
-          min_obstacle_height: 0.2          # ignore ground returns
-          clearing: True
+        # Why STVL instead of nav2_costmap_2d::VoxelLayer here: VoxelLayer can only
+        # release a cell once a clearing ray has passed through EVERY occupied voxel in
+        # its 1.6 m column (mark_threshold 0 => popcount must reach zero), and the beams
+        # that would do that are the ground-terminated ones that min_obstacle_height
+        # deletes. STVL has no raytracing and no sticky state at all: UpdateROSCostmap()
+        # calls resetMaps() and rebuilds the entire 2D costmap from the voxel grid every
+        # cycle, so a cell is lethal only while a live voxel sits above it. Voxels expire
+        # on voxel_decay whether or not anything is ever seen through them.
+        #
+        # Still the 3D cloud, not /rslidar_scan -- only AMCL is limited to LaserScan.
+        # The costmap transforms into its global_frame through the whole tf chain, so
+        # gait tilt is already accounted for and needs no stabilised frame.
+        voxel_size: 0.02                  # must equal resolution above, see note there
+        voxel_decay: 5.0                 # seconds, since decay_model is linear
+        decay_model: 0                    # 0=linear, 1=exponential, 2=persistent
+        mark_threshold: 0                 # occupied voxels in a column to mark the cell
+        track_unknown_space: False        # local costmap: unseen == free
+        update_footprint_enabled: True
+        combination_method: 1             # 1=max, 0=override
+        publish_voxel_map: True           # NOTE: PointCloud2 on ~/voxel_grid, NOT the
+                                          # nav2_msgs/VoxelGrid the old layer published,
+                                          # so the RViz display has to be re-pointed.
+        transform_tolerance: 2.0
+        mapping_mode: False
+        map_save_duration: 60.0
+        observation_sources: rslidar_mark rslidar_clear
+        rslidar_mark:
+          data_type: PointCloud2
+          topic: /rslidar_points_filtered
           marking: True
-          raytrace_max_range: 5.0 
-          obstacle_max_range: 4.0
+          clearing: False
+          obstacle_range: 2.5             # ~ the 2.495 m half-width of the 5x5 window
+          min_obstacle_height: 0.2        # ignore ground returns
+          max_obstacle_height: 1.5
+          expected_update_rate: 1.5       # 10 Hz sensor; go stale rather than silently
+                                          # navigate on a frozen cloud if the driver dies
+          observation_persistence: 0.0    # 0 = latest scan only
+          inf_is_valid: False
+          filter: "voxel"                 # ~32.7k pts/scan; decimate before insertion
+          voxel_min_points: 0
+          clear_after_reading: True
+        rslidar_clear:
+          enabled: True
+          data_type: PointCloud2
+          topic: /rslidar_points_filtered
+          marking: False
+          clearing: True
+          # min_z/max_z are RADIAL distances from the sensor, not heights -- they are the
+          # near/far planes of the clearing frustum (_min_d/_max_d in the frustum model).
+          min_z: 0.3
+          max_z: 3.6                      # ~ the 3.53 m corner of the 5x5 window
+          # >>> VERIFY THESE TWO AGAINST YOUR ACTUAL UNIT <<<
+          # Values below are RS-LiDAR-32: vertical FOV -25 deg .. +15 deg, i.e. a 40 deg
+          # span whose centre sits 5 deg BELOW the planar axis. vertical_fov_angle is the
+          # symmetric span; vertical_fov_offset shifts the hourglass to match an
+          # asymmetric lidar. A Helios variant has a different span and these change.
+          vertical_fov_angle: 0.6981      # 40 deg
+          vertical_fov_offset: -0.0873    # -5 deg
+          vertical_fov_padding: 0.05      # metres, 3D lidar frustum only
+          horizontal_fov_angle: 6.2832    # >6.27 trips the full-circle fast path
+          decay_acceleration: 5.0         # 1/s^2, how hard in-frustum voxels are expired
+          model_type: 1                   # 0=depth camera, 1=3D lidar hourglass frustum
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
@@ -283,37 +287,69 @@ global_costmap:
       footprint: "[ [0.45,0.25], [0.45,-0.25], [-0.70,-0.25], [-0.70,0.25] ]"
       resolution: 0.02
       track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
-      obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
+      plugins: ["static_layer", "stvl_layer", "inflation_layer"]
+      stvl_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
         enabled: True
-        # Same reasoning as local_costmap's voxel_layer: ObstacleLayer takes PointCloud2
-        # directly, so there is nothing to gain by feeding it the flattened scan.
-        observation_sources: rslidar
-        rslidar:
-          topic: /rslidar_points
-          data_type: "PointCloud2"
-          max_obstacle_height: 1.5
-          min_obstacle_height: 0.2          # ignore ground returns
-          clearing: True
+        voxel_size: 0.02                  # must equal resolution above, see note there
+        voxel_decay: 5.0                 # seconds, since decay_model is linear
+        decay_model: 0                    # 0=linear, 1=exponential, 2=persistent
+        mark_threshold: 0                 # occupied voxels in a column to mark the cell
+        track_unknown_space: False        # this LAYER never emits NO_INFORMATION. Unknown
+                                          # space is static_layer's to own -- the costmap's
+                                          # own track_unknown_space (true, above) is what
+                                          # makes the planner respect it.
+        update_footprint_enabled: True
+        combination_method: 1             # 1=max, 0=override
+        publish_voxel_map: True
+        transform_tolerance: 2.0
+        mapping_mode: False
+        map_save_duration: 60.0
+        observation_sources: rslidar_mark rslidar_clear
+        rslidar_mark:
+          data_type: PointCloud2
+          topic: /rslidar_points_filtered
           marking: True
-          raytrace_max_range: 5.0 
-          obstacle_max_range: 4.0
+          clearing: False
+          # Covers the ~5 m travelled between replans. Not further: marks land in the map
+          # frame, so AMCL's yaw error smears them by sigma*range -- past ~6 m that
+          # exceeds inflation_radius and the planner routes around the wrong place.
+          obstacle_range: 6.0
+          min_obstacle_height: 0.2        # ignore ground returns
+          max_obstacle_height: 1.5
+          expected_update_rate: 1.5       # 10 Hz sensor; go stale rather than silently
+                                          # navigate on a frozen cloud if the driver dies
+          observation_persistence: 0.0    # 0 = latest scan only
+          inf_is_valid: False
+          filter: "voxel"                 # ~32.7k pts/scan; decimate before insertion
+          voxel_min_points: 0
+          clear_after_reading: True
+        rslidar_clear:
+          enabled: True
+          data_type: PointCloud2
+          topic: /rslidar_points_filtered
+          marking: False
+          clearing: True
+          # min_z/max_z are RADIAL distances from the sensor, not heights -- they are the
+          # near/far planes of the clearing frustum (_min_d/_max_d in the frustum model).
+          min_z: 0.3
+          max_z: 7.0                      # must exceed obstacle_range, or marks beyond the
+                                          # frustum only ever decay passively
+          vertical_fov_angle: 0.6981      # 40 deg
+          vertical_fov_offset: -0.0873    # -5 deg
+          vertical_fov_padding: 0.05      # metres, 3D lidar frustum only
+          horizontal_fov_angle: 6.2832    # >6.27 trips the full-circle fast path
+          decay_acceleration: 5.0         # 1/s^2, how hard in-frustum voxels are expired
+          model_type: 1                   # 0=depth camera, 1=3D lidar hourglass frustum
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.7
+        inflation_radius: 0.75
       always_send_full_costmap: True
 
-# The yaml_filename does not need to be specified since it going to be set by defaults in launch.
-# If you'd rather set it in the yaml, remove the default "map" value in the tb3_simulation_launch.py
-# file & provide full path to map below. If CLI map configuration or launch default is provided, that will be used.
-# map_server:
-#   ros__parameters:
-#     yaml_filename: ""
 
 map_saver:
   ros__parameters:
@@ -409,10 +445,10 @@ velocity_smoother:
     stamp_smoothed_velocity_with_smoothing_time: False
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.6, 0.6, 0.8]
-    min_velocity: [-0.6, -0.6, -0.8]
-    max_accel: [2.5, 2.5, 3.2]
-    max_decel: [-2.5, -2.5, -3.2]
+    max_velocity: [0.5, 0.3, 0.8]
+    min_velocity: [-0.2, -0.3, -0.8]
+    max_accel: [0.3, 0.3, 1.0]
+    max_decel: [-1.0, -1.0, -1.0]
     # Unused while feedback is OPEN_LOOP (the smoother then works off its own last
     # command), but corrected anyway: this robot's odometry is /dog_odom, same as
     # bt_navigator above. Matters the moment feedback is switched to CLOSED_LOOP.
