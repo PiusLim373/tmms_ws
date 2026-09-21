@@ -16,6 +16,20 @@
   --text:          #9CA3AF;
   --text-h:        #E5E7EB;
   --text-dim:      #6B7280;
+
+  /* C2 tab. The map three are the only colours the canvas paints the grid with; the pin and
+     status ones are read by C2MapCanvas at draw time, so a theme swap repaints correctly. */
+  --panel-bg-alt:  #1C1229;
+  --map-free:      #E8E3F0;
+  --map-wall:      #1A1024;
+  --map-unknown:   #0D0812;
+  --pin-action:    #DC2626;
+  --pin-simple:    #1D4ED8;
+  --pin-home:      #34D399;
+  --robot-marker:  #22D3EE;
+  --success:       #4ADE80;
+  --warning:       #FBBF24;
+  --danger:        #F87171;
   color-scheme: dark;
 }
 
@@ -30,6 +44,20 @@
   --text:          #4B3D66;
   --text-h:        #1A0A2E;
   --text-dim:      #8B7EA0;
+
+  /* C2 tab, light. Unknown space is a shade darker than free here rather than lighter, so the
+     map still reads as a map and the edge of the scan is still visible. */
+  --panel-bg-alt:  #EAE1F8;
+  --map-free:      #FFFFFF;
+  --map-wall:      #2A1F3D;
+  --map-unknown:   #DDD4EC;
+  --pin-action:    #DC2626;
+  --pin-simple:    #1D4ED8;
+  --pin-home:      #047857;
+  --robot-marker:  #0891B2;
+  --success:       #15803D;
+  --warning:       #B45309;
+  --danger:        #DC2626;
   color-scheme: light;
 }
 

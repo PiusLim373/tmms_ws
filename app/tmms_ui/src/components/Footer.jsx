@@ -66,6 +66,17 @@ export function Footer({ connected, page, onNavigate }) {
         >
           🧭 Navigation
         </button>
+        <button
+          onClick={() => onNavigate('c2')}
+          className="btn-icon"
+          style={{
+            padding: '8px 16px',
+            fontSize: 12,
+            ...(page === 'c2' && { borderColor: 'var(--accent-bright)' }),
+          }}
+        >
+          📍 C2
+        </button>
       </div>
 
       {/* Center: ESTOP */}
