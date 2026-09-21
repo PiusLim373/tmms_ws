@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useKeyboard } from '../hooks/useKeyboard'
+import { setQuadrupedPaused } from '../services/rosbridge'
 import { MappingToolWidget } from './widgets/MappingToolWidget'
 import { QuadrupedWidget } from './widgets/QuadrupedWidget'
 import { ResizeHandle } from './ui/ResizeHandle'
@@ -16,7 +17,7 @@ const LAYOUTS = {
 // the page is opened on the 2D tab.
 const SUBVIEW_KEY = 'tmms.mapping.subView'
 
-export function MappingPage() {
+export function MappingPage({ isPaused }) {
   const { heldKeys } = useKeyboard()
 
   // Validated against LAYOUTS rather than trusted: a stale or hand-edited key would otherwise
@@ -76,7 +77,11 @@ export function MappingPage() {
         />
 
         <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <QuadrupedWidget heldKeys={heldKeys} />
+          <QuadrupedWidget
+            heldKeys={heldKeys}
+            blocked={!isPaused}
+            onPause={() => setQuadrupedPaused(true)}
+          />
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useTopicActivity } from '../hooks/useTopicActivity'
+import { usePing } from '../hooks/usePing'
 import { SettingsMenu } from './ui/SettingsMenu'
 import { WarningModal } from './ui/WarningModal'
 import { Toast } from './ui/Toast'
@@ -7,6 +7,12 @@ import { Toast } from './ui/Toast'
 function batteryColor(pct) {
   if (pct > 50) return '#22C55E'
   if (pct > 20) return '#F59E0B'
+  return '#EF4444'
+}
+
+function pingColor(ms) {
+  if (ms < 50) return '#22C55E'
+  if (ms < 150) return '#F59E0B'
   return '#EF4444'
 }
 
@@ -28,8 +34,9 @@ const REBOOT_CONFIRM = {
 const POLL_INTERVAL_MS = 1500
 const POLL_TIMEOUT_MS = 180000
 
-export function Header({ connected, theme, onThemeToggle }) {
+export function Header({ connected, battery, theme, onThemeToggle }) {
   const [time, setTime] = useState(() => new Date())
+  const ping = usePing(5000)
 
   useEffect(() => {
     const id = setInterval(() => setTime(new Date()), 1000)
@@ -92,11 +99,6 @@ export function Header({ connected, theme, onThemeToggle }) {
       setBusyTarget(null)
     }
   }, [showToast])
-
-  const { active: statusActive, lastMsg: statusMsg } = useTopicActivity(
-    '/quadruped_main_status', 'tmms_msgs/QuadrupedMainStatus', 1000
-  )
-  const battery = statusActive ? statusMsg?.battery_percentage : undefined
 
   const hh = String(time.getHours()).padStart(2, '0')
   const mm = String(time.getMinutes()).padStart(2, '0')
@@ -161,6 +163,22 @@ export function Header({ connected, theme, onThemeToggle }) {
             {connected ? 'CONNECTED' : 'DISCONNECTED'}
           </span>
         </div>
+
+        {/* Ping — round trip to rosbridge, refreshed every 5s */}
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 12,
+            color: ping == null ? 'var(--text-dim)' : pingColor(ping),
+            letterSpacing: '0.04em',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+          title={ping == null
+            ? 'No reply from rosbridge'
+            : `Round trip to rosbridge: ${ping} ms`}
+        >
+          ⟳ {ping == null ? '--' : `${ping}ms`}
+        </span>
 
         {/* Clock */}
         <span

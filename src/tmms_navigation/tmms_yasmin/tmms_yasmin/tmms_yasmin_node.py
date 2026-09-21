@@ -10,12 +10,18 @@ answer to "what is the robot allowed to do right now".
         ^                                             |  /lichtblick_navgoal
         |                                             |  accepted by nav2
         |  localization_lost (cancels any goal)       v
-        +----------------------------------------- NAVIGATING
-        |                                          |    |    |
-        |              succeeded --> IDLE ---------+    |    |
-        |              aborted   --> NAVIGATION_FAILED -+    |
-        |              canceled  --> CANCELED ---------------+
+        +----------------------------------------- NAVIGATING <--+ /lichtblick_navgoal
+        |                                          |    |    |    | (preempts in place)
+        |              succeeded --> IDLE ---------+    |    |    |
+        |              aborted   --> NAVIGATION_FAILED -+    |    |
+        |              canceled  --> CANCELED ---------------+    |
         +-- (all three accept a new goal and go back to NAVIGATING)
+
+A goal arriving during NAVIGATING preempts the running one without leaving the state. One
+sequencing contract falls out of that: after /cancel_goal, the caller MUST wait for
+/yasmin_state to read CANCELED before publishing the next goal. A goal that lands while the
+cancel is still in flight is dropped -- NAVIGATING will not take it once cancelling has
+started, and CANCELED clears it on entry.
 
 IDLE, CANCELED and NAVIGATION_FAILED are three instances of one state class differing only
 in the name they publish -- they are the same waiting behaviour, and keeping them separate is
@@ -191,9 +197,9 @@ class WaitForGoalState(State):
 
     def execute(self, blackboard: Blackboard) -> str:
         self.ctx.publish_state(self.state_name)
-        # Anything that arrived while the FSM was elsewhere -- notably a goal published
-        # during NAVIGATING -- is stale. Without this the robot would silently start a
-        # second navigation the instant the first one finished.
+        # NAVIGATING now consumes goals itself, so what is left here arrived during
+        # cancellation or while UNLOCALIZED. Both are stale; dropping them is what keeps
+        # the robot from silently starting a second navigation on entry.
         self.ctx.clear_pending_goal()
 
         while rclpy.ok() and not self.is_canceled():
@@ -229,8 +235,8 @@ class NavigatingState(State):
         super().__init__(['succeeded', 'aborted', 'canceled', 'localization_lost'])
         self.ctx = ctx
         self.set_description(
-            'Polls the active nav2 goal. Cancels it on /cancel_goal or on lost '
-            'localization, and reports which of the two caused the cancellation.')
+            'Polls the active nav2 goal. Swaps in a new /lichtblick_navgoal by preemption. '
+            'Cancels on /cancel_goal or on lost localization, and reports the reason.')
 
     def execute(self, blackboard: Blackboard) -> str:
         self.ctx.publish_state(QuadrupedMainStatus.NAVIGATING)
@@ -250,6 +256,30 @@ class NavigatingState(State):
                     yasmin.YASMIN_LOG_INFO(f'Cancelling nav2 goal ({cancel_reason})')
                     self.ctx.navigator.cancelTask()
 
+            # A new goal replaces the running one in place. nav2 preempts server-side and
+            # the tree's GlobalUpdatedGoal fires a replan; the state stays NAVIGATING.
+            # Skipped once cancelling has started -- a cancel in flight always wins.
+            if cancel_reason is None:
+                new_goal = self.ctx.take_goal()
+                if new_goal is not None:
+                    if not self.ctx.nav_server_ready():
+                        # goToPose() would block forever waiting for the server.
+                        yasmin.YASMIN_LOG_ERROR(
+                            'NavigateToPose action server unavailable; abandoning goal')
+                        return 'aborted'
+                    # goToPose() overwrites goal_handle before checking `accepted`, so a
+                    # rejection must restore it or cancelTask() stops the rejected handle
+                    # and nav2 keeps driving the old goal.
+                    prev_handle = self.ctx.navigator.goal_handle
+                    if self.ctx.navigator.goToPose(new_goal):
+                        yasmin.YASMIN_LOG_INFO('New goal preempted the active one')
+                    else:
+                        self.ctx.navigator.goal_handle = prev_handle
+                        yasmin.YASMIN_LOG_WARN(
+                            'nav2 rejected the new goal; cancelling the active one')
+                        cancel_reason = 'goal_rejected'
+                        self.ctx.navigator.cancelTask()
+
             # Spins internally with timeout_sec=0.10, so this call IS the loop pace.
             if self.ctx.navigator.isTaskComplete():
                 break
@@ -259,6 +289,8 @@ class NavigatingState(State):
         if cancel_reason == 'localization_lost':
             yasmin.YASMIN_LOG_WARN('Localization lost mid-goal; goal cancelled')
             return 'localization_lost'
+        if cancel_reason == 'goal_rejected':
+            return 'aborted'
         if result == TaskResult.SUCCEEDED:
             yasmin.YASMIN_LOG_INFO('Goal reached')
             return 'succeeded'

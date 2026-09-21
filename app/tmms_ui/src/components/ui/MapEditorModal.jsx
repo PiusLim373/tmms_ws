@@ -6,6 +6,7 @@ import {
 import {
   applyUndo, beginStroke, drawCircle, drawLine, drawRect, stampBrush,
 } from '../../lib/raster'
+import { todayPrefix } from '../../lib/dates'
 
 // A flattened lidar map always has junk in it — someone who walked through the scan, a parked
 // pallet, a doorway the beam clipped through — and nav2 plans around or into every one. This
@@ -739,7 +740,9 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
               fontFamily: 'var(--font-mono)', border: 'none',
               cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.5 : 1,
             }}
-            onClick={() => setNamePrompt({ value: mapName ?? '' })}
+            // Only a brand-new map gets the date seed; re-saving an existing one keeps its
+            // own name so the operator does not accidentally fork it under a new date.
+            onClick={() => setNamePrompt({ value: mapName ?? todayPrefix() })}
             disabled={busy}
           >
             Save as ▶

@@ -390,7 +390,10 @@ app.get('/api/maps2d', (_req, res) => {
     .filter((f) => f.endsWith('.png'))
     .map((f) => f.replace(/\.png$/, ''))
     .filter((n) => MAP_NAME_RE.test(n))
+    // Name-descending, matching /api/maps: with the YYMMDD_ prefix the UI seeds, that puts
+    // the newest on top, and unlike an mtime sort it does not reshuffle when a map is edited.
     .sort()
+    .reverse()
   res.json(names.map(readMap2d).filter(Boolean))
 })
 

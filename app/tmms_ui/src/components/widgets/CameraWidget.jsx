@@ -1,7 +1,8 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { subscribeCamera } from '../../services/rosbridge'
+import { useCameraView } from '../../hooks/useCameraView'
 
-function decodeCompressedImage(msg, canvas) {
+function decodeCompressedImage(msg, canvas, onSize) {
   const { data: b64, format } = msg
   if (!b64) return
   const mimeType = format && format.includes('png') ? 'image/png' : 'image/jpeg'
@@ -10,13 +11,14 @@ function decodeCompressedImage(msg, canvas) {
     if (canvas.width !== img.width || canvas.height !== img.height) {
       canvas.width = img.width
       canvas.height = img.height
+      onSize(img.width, img.height)
     }
     canvas.getContext('2d').drawImage(img, 0, 0)
   }
   img.src = `data:${mimeType};base64,${b64}`
 }
 
-function decodeRosImage(msg, canvas) {
+function decodeRosImage(msg, canvas, onSize) {
   const { width, height, encoding, data: b64 } = msg
   if (!width || !height || !b64) return
 
@@ -60,31 +62,38 @@ function decodeRosImage(msg, canvas) {
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width
     canvas.height = height
+    onSize(width, height)
   }
   canvas.getContext('2d').putImageData(imageData, 0, 0)
 }
 
-// Shared hook — re-used by ThirdPersonWidget
+// Shared hook — re-used by ThirdPersonWidget through CameraWidget.
 export function useCameraFeed(topicName) {
   const canvasRef     = useRef(null)
   const pendingRef    = useRef(null)
   const rafRef        = useRef(null)
   const [active, setActive] = useState(false)
   const [fps, setFps]       = useState(0)
+  // Intrinsic frame size, needed to fit the image to the panel. Only replaced when the
+  // dimensions actually change, so it stays referentially stable for useCameraView.
+  const [frameSize, setFrameSize] = useState({ width: 0, height: 0 })
   const frameTimesRef = useRef([])
   const isCompressed  = topicName.endsWith('/compressed')
+
+  const onSize = useCallback((width, height) => setFrameSize({ width, height }), [])
 
   const drawPending = useCallback(() => {
     rafRef.current = null
     const msg = pendingRef.current
     if (msg && canvasRef.current) {
-      isCompressed ? decodeCompressedImage(msg, canvasRef.current) : decodeRosImage(msg, canvasRef.current)
+      const decode = isCompressed ? decodeCompressedImage : decodeRosImage
+      decode(msg, canvasRef.current, onSize)
       const now = Date.now()
       frameTimesRef.current.push(now)
       frameTimesRef.current = frameTimesRef.current.filter((t) => now - t < 1000)
       setFps(frameTimesRef.current.length)
     }
-  }, [])
+  }, [isCompressed, onSize])
 
   useEffect(() => {
     const unsub = subscribeCamera(topicName, (msg) => {
@@ -100,7 +109,7 @@ export function useCameraFeed(topicName) {
     }
   }, [topicName, drawPending])
 
-  return { canvasRef, active, fps }
+  return { canvasRef, active, fps, frameSize }
 }
 
 function NoSignal({ topicName }) {
@@ -119,8 +128,11 @@ function NoSignal({ topicName }) {
   )
 }
 
-export function CameraWidget({ topicName, title, className = '' }) {
-  const { canvasRef, active, fps } = useCameraFeed(topicName)
+// `footer` is an optional bar below the image — ThirdPersonWidget puts its pan/tilt controls
+// there rather than over the canvas, which is what keeps them clear of drag-to-pan.
+export function CameraWidget({ topicName, title, footer, className = '' }) {
+  const { canvasRef, active, fps, frameSize } = useCameraFeed(topicName)
+  const { viewportRef, atFit, reset, handlers } = useCameraView(canvasRef, frameSize)
 
   return (
     <div
@@ -135,6 +147,17 @@ export function CameraWidget({ topicName, title, className = '' }) {
               {fps} fps
             </span>
           )}
+          {active && (
+            <button
+              className="btn-icon"
+              style={{ padding: '1px 6px', fontSize: 9 }}
+              onClick={(e) => { e.currentTarget.blur(); reset() }}
+              disabled={atFit}
+              title="Recentre and fit the image"
+            >
+              Reset View
+            </button>
+          )}
           <span
             style={{
               width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
@@ -143,12 +166,33 @@ export function CameraWidget({ topicName, title, className = '' }) {
           />
         </div>
       </div>
-      <div className="flex items-center justify-center flex-1" style={{ background: '#000', overflow: 'hidden', minHeight: 0 }}>
+
+      {/* Scroll to zoom about the cursor, drag to pan. The canvas is drawn at its intrinsic
+          size and positioned purely by the transform useCameraView writes. */}
+      <div
+        ref={viewportRef}
+        className="flex-1"
+        style={{
+          position: 'relative',
+          background: '#000',
+          overflow: 'hidden',
+          minHeight: 0,
+          touchAction: 'none',
+          userSelect: 'none',
+          cursor: active ? 'grab' : 'default',
+        }}
+        {...(active ? handlers : {})}
+      >
         {active
-          ? <canvas ref={canvasRef} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+          ? <canvas
+              ref={canvasRef}
+              style={{ position: 'absolute', top: 0, left: 0, transformOrigin: '0 0', display: 'block' }}
+            />
           : <NoSignal topicName={topicName} />
         }
       </div>
+
+      {footer}
     </div>
   )
 }
