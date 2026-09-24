@@ -17,6 +17,13 @@ answer to "what is the robot allowed to do right now".
         |              canceled  --> CANCELED ---------------+    |
         +-- (all three accept a new goal and go back to NAVIGATING)
 
+   /system_error non-empty, from ANY of those four --> ERROR --(it goes empty)--> IDLE
+
+ERROR is the sensor-fault path: error_monitoring raises it when a costmap's cloud buffer
+goes stale, which cancels any active goal and refuses new ones until the flag clears. Unlike
+localization_lost it clears itself, so the normal case needs no operator action. UNLOCALIZED
+is exempt -- ERROR exits to IDLE, which is only safe past the localization gate.
+
 A goal arriving during NAVIGATING preempts the running one without leaving the state. One
 sequencing contract falls out of that: after /cancel_goal, the caller MUST wait for
 /yasmin_state to read CANCELED before publishing the next goal. A goal that lands while the
@@ -85,6 +92,8 @@ class NavContext:
         self._localized = False
         self._lost = False
         self._cancel_requested = False
+        # Non-empty is the fault, and the string is the reason. Empty means healthy.
+        self._system_error = ''
         # Lets a blocked state wake immediately on a new goal instead of waiting out its tick.
         self._wake = threading.Event()
 
@@ -97,6 +106,10 @@ class NavContext:
             String, '/localization_status', self._localization_status_cb, LATCHED)
         self.node.create_subscription(
             PoseStamped, '/lichtblick_navgoal', self._navgoal_cb, 10)
+        # error_monitoring publishes this latched, so the same durability argument applies:
+        # starting after a fault was raised must not look like a healthy system.
+        self.node.create_subscription(
+            String, '/system_error', self._system_error_cb, LATCHED)
         self.node.create_service(Empty, '/cancel_goal', self._cancel_goal_cb)
 
     # -- callbacks: flags only, never a navigator call -------------------------
@@ -110,6 +123,11 @@ class NavContext:
     def _navgoal_cb(self, msg):
         with self._lock:
             self._pending_goal = msg
+        self._wake.set()
+
+    def _system_error_cb(self, msg):
+        with self._lock:
+            self._system_error = msg.data
         self._wake.set()
 
     def _cancel_goal_cb(self, request, response):
@@ -137,6 +155,11 @@ class NavContext:
     def localization_lost(self):
         with self._lock:
             return self._lost
+
+    def system_error(self):
+        """The current fault reason, or '' when healthy."""
+        with self._lock:
+            return self._system_error
 
     def take_goal(self):
         """Pop the pending goal, if any. Take-once: a goal is consumed, not re-read."""
@@ -188,12 +211,13 @@ class WaitForGoalState(State):
     """
 
     def __init__(self, ctx, state_name):
-        super().__init__(['goal_accepted', 'localization_lost'])
+        super().__init__(['goal_accepted', 'localization_lost', 'system_error'])
         self.ctx = ctx
         self.state_name = state_name
         self.set_description(
             f'Publishes "{state_name}" and waits for /lichtblick_navgoal. Forwards an '
-            'accepted goal to nav2; falls back to UNLOCALIZED if localization is lost.')
+            'accepted goal to nav2; falls back to UNLOCALIZED if localization is lost, or '
+            'to ERROR on /system_error.')
 
     def execute(self, blackboard: Blackboard) -> str:
         self.ctx.publish_state(self.state_name)
@@ -206,6 +230,13 @@ class WaitForGoalState(State):
             if self.ctx.localization_lost():
                 yasmin.YASMIN_LOG_WARN('Localization lost while waiting for a goal')
                 return 'localization_lost'
+
+            # Checked here too, not just in NAVIGATING: a sensor feed that has died must
+            # stop a NEW goal being dispatched into a costmap with nothing in it.
+            reason = self.ctx.system_error()
+            if reason:
+                yasmin.YASMIN_LOG_ERROR(f'System error while waiting for a goal: {reason}')
+                return 'system_error'
 
             goal = self.ctx.take_goal()
             if goal is None:
@@ -228,15 +259,47 @@ class WaitForGoalState(State):
         return 'localization_lost'
 
 
+class SystemErrorState(State):
+    """Holds while /system_error is raised, refusing goals until it clears.
+
+    Unlike UNLOCALIZED this clears itself: error_monitoring lifts the flag once the fault
+    stops reporting, so no operator action is needed in the normal case.
+    """
+
+    def __init__(self, ctx):
+        super().__init__(['recovered', 'localization_lost'])
+        self.ctx = ctx
+        self.set_description(
+            'Publishes "error" and holds until /system_error goes empty. Any goal that '
+            'arrives meanwhile is dropped.')
+
+    def execute(self, blackboard: Blackboard) -> str:
+        self.ctx.publish_state(QuadrupedMainStatus.ERROR)
+        # Same rule as WaitForGoalState: a goal that arrived during the fault is stale.
+        self.ctx.clear_pending_goal()
+
+        while rclpy.ok() and not self.is_canceled():
+            if self.ctx.localization_lost():
+                return 'localization_lost'
+            if not self.ctx.system_error():
+                yasmin.YASMIN_LOG_INFO('System error cleared')
+                return 'recovered'
+            self.ctx.wait_tick()
+
+        return 'recovered'
+
+
 class NavigatingState(State):
     """Drives one nav2 goal to completion, or cancels it."""
 
     def __init__(self, ctx):
-        super().__init__(['succeeded', 'aborted', 'canceled', 'localization_lost'])
+        super().__init__(
+            ['succeeded', 'aborted', 'canceled', 'localization_lost', 'system_error'])
         self.ctx = ctx
         self.set_description(
             'Polls the active nav2 goal. Swaps in a new /lichtblick_navgoal by preemption. '
-            'Cancels on /cancel_goal or on lost localization, and reports the reason.')
+            'Cancels on /cancel_goal, lost localization or /system_error, and reports the '
+            'reason.')
 
     def execute(self, blackboard: Blackboard) -> str:
         self.ctx.publish_state(QuadrupedMainStatus.NAVIGATING)
@@ -245,11 +308,20 @@ class NavigatingState(State):
         # Why we cancelled decides the outcome: a cancel caused by lost localization must
         # land in UNLOCALIZED, not CANCELED, even though nav2 reports both as CANCELED.
         cancel_reason = None
+        # Captured when the fault is seen, not read back afterwards -- the flag can clear
+        # while nav2 is still winding the goal down, which would log an empty reason.
+        error_text = ''
 
         while rclpy.ok():
             if cancel_reason is None:
                 if self.ctx.localization_lost():
                     cancel_reason = 'localization_lost'
+                # Ahead of the cancel check so a concurrent operator cancel does not mask
+                # the fault -- the robot stops either way, but the reason is what the
+                # operator needs to see.
+                elif self.ctx.system_error():
+                    cancel_reason = 'system_error'
+                    error_text = self.ctx.system_error()
                 elif self.ctx.cancel_requested() or self.is_canceled():
                     cancel_reason = 'canceled'
                 if cancel_reason is not None:
@@ -289,6 +361,9 @@ class NavigatingState(State):
         if cancel_reason == 'localization_lost':
             yasmin.YASMIN_LOG_WARN('Localization lost mid-goal; goal cancelled')
             return 'localization_lost'
+        if cancel_reason == 'system_error':
+            yasmin.YASMIN_LOG_ERROR(f'System error mid-goal; goal cancelled: {error_text}')
+            return 'system_error'
         if cancel_reason == 'goal_rejected':
             return 'aborted'
         if result == TaskResult.SUCCEEDED:
@@ -315,6 +390,7 @@ def main():
     idle_transitions = {
         'goal_accepted': 'NAVIGATING',
         'localization_lost': 'UNLOCALIZED',
+        'system_error': 'ERROR',
     }
 
     sm.add_state('UNLOCALIZED', UnlocalizedState(ctx),
@@ -326,12 +402,20 @@ def main():
     sm.add_state('NAVIGATION_FAILED',
                  WaitForGoalState(ctx, QuadrupedMainStatus.NAVIGATION_FAILED),
                  transitions=idle_transitions)
+    # Back to IDLE, not to wherever we came from: ERROR is only reachable from states that
+    # are already past the localization gate, so IDLE is always a safe landing.
+    sm.add_state('ERROR', SystemErrorState(ctx),
+                 transitions={
+                     'recovered': 'IDLE',
+                     'localization_lost': 'UNLOCALIZED',
+                 })
     sm.add_state('NAVIGATING', NavigatingState(ctx),
                  transitions={
                      'succeeded': 'IDLE',
                      'aborted': 'NAVIGATION_FAILED',
                      'canceled': 'CANCELED',
                      'localization_lost': 'UNLOCALIZED',
+                     'system_error': 'ERROR',
                  })
     sm.set_start_state('UNLOCALIZED')
 

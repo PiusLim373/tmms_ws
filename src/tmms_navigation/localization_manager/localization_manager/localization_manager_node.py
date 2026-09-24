@@ -33,12 +33,17 @@ from tmms_msgs.msg import QuadrupedMainStatus
 from tmms_msgs.srv import StringTrigger
 
 # Loading a map or re-seeding the pose is only safe when the robot is not actively driving
-# itself somewhere. Everything except NAVIGATING and ERROR.
+# itself somewhere, which is NAVIGATING alone.
+#
+# ERROR is allowed deliberately. The robot is stopped there (the goal was cancelled on the
+# way in), and it is exactly when an operator needs to reload a map or re-seed a pose as part
+# of recovering -- excluding it deadlocks a fault that the automatic restart could not clear.
 ALLOWED_STATES = frozenset({
     QuadrupedMainStatus.UNLOCALIZED,
     QuadrupedMainStatus.IDLE,
     QuadrupedMainStatus.CANCELED,
     QuadrupedMainStatus.PAUSED,
+    QuadrupedMainStatus.ERROR,
 })
 
 # Same rule as ui_backend.js's MAP_NAME_RE. /map_load takes a bare name and builds the path

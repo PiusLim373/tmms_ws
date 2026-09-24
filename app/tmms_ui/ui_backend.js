@@ -353,6 +353,11 @@ app.delete('/api/maps/:filename', (req, res) => {
 const png2dPath = (name) => path.join(PNG_DIR, `${name}.png`)
 const yaml2dPath = (name) => path.join(PNG_DIR, `${name}.yaml`)
 
+// Placeholder pair that always sits in PNG_DIR so map_server has something to point at. It
+// is not a survey of anywhere, so it is hidden from the listing and refused as a save target
+// — loading it by accident would localize the robot against a map of nothing.
+const RESERVED_MAP_NAMES = new Set(['default_map'])
+
 // A map is only a map when BOTH halves are present. Half a pair is not reported as broken,
 // it is simply not a map — map_server cannot load a yaml without its image, and an image with
 // no yaml has no resolution or origin, so neither is something the operator can act on.
@@ -389,7 +394,7 @@ app.get('/api/maps2d', (_req, res) => {
   const names = fs.readdirSync(PNG_DIR)
     .filter((f) => f.endsWith('.png'))
     .map((f) => f.replace(/\.png$/, ''))
-    .filter((n) => MAP_NAME_RE.test(n))
+    .filter((n) => MAP_NAME_RE.test(n) && !RESERVED_MAP_NAMES.has(n))
     // Name-descending, matching /api/maps: with the YYMMDD_ prefix the UI seeds, that puts
     // the newest on top, and unlike an mtime sort it does not reshuffle when a map is edited.
     .sort()
@@ -455,6 +460,9 @@ app.post('/api/maps2d', mapsUpload.fields([{ name: 'png', maxCount: 1 }, { name:
     if (!MAP_NAME_RE.test(pngName)) {
       return res.status(400).json({ error: 'map name must match [A-Za-z0-9_]+' })
     }
+    if (RESERVED_MAP_NAMES.has(pngName)) {
+      return res.status(400).json({ error: `"${pngName}" is a reserved name — choose another` })
+    }
 
     // Parsed before anything is written: a yaml without resolution or origin produces a map
     // that loads as a picture at the wrong scale in the wrong place, which is worse than a
@@ -482,6 +490,11 @@ app.post('/api/maps2d/:name', mapsUpload.single('png'), (req, res) => {
   const { name } = req.params
   if (!MAP_NAME_RE.test(name)) {
     return res.status(400).json({ error: 'map name must match [A-Za-z0-9_]+' })
+  }
+  // Refused rather than hidden: a save that succeeded and then never appeared in the list
+  // would look like the save itself had failed.
+  if (RESERVED_MAP_NAMES.has(name)) {
+    return res.status(400).json({ error: `"${name}" is a reserved name — choose another` })
   }
   if (!req.file) return res.status(400).json({ error: 'no png uploaded' })
 
@@ -580,7 +593,9 @@ app.post('/api/mapping-state', (req, res) => {
 // manager its own TLS listener would instead mean exposing the reboot endpoints to the whole
 // network and making the operator accept a second self-signed cert.
 const REBOOT_MANAGER_URL = process.env.TMMS_REBOOT_URL || 'http://127.0.0.1:5055'
-const REBOOT_TARGETS = new Set(['rosbridge', 'tmms_ws'])
+const REBOOT_TARGETS = new Set([
+  'rosbridge', 'pointcloud_to_laserscan', 'lidar_filter', 'nav2', 'tmms_ws',
+])
 
 // Upstream status codes are passed straight through: 409 (a reboot is already running) is a
 // state the dashboard renders differently from a failure.

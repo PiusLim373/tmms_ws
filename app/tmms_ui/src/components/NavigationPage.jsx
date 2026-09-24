@@ -17,7 +17,7 @@ export function NavigationPage({ onNavigate, status }) {
   // own state directly. Not persisted — same as Mapping and the dashboard's splits.
   const rightColRef = useRef(null)
   const [mapEnd, setMapEnd] = useState(0.32)   // bottom of LoadMapWidget
-  const [navEnd, setNavEnd] = useState(0.68)   // bottom of NavigationControlWidget
+  const [navEnd, setNavEnd] = useState(0.55)   // bottom of NavigationControlWidget
 
   // quadruped_main_status arrives as a prop from App, which subscribes once for the whole
   // app: every page needs it, and separate subscriptions to the same 5Hz topic would both

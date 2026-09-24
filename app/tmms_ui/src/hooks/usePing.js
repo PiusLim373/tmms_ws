@@ -1,52 +1,75 @@
 import { useState, useEffect, useRef } from 'react'
 import { ros, callRosService } from '../services/rosbridge'
 
-// Round-trip over the rosbridge websocket — the same path teleop commands and camera frames
-// travel, so this is the latency that actually matters to the operator.
+// Two probes on one interval:
+//   api — browser to ui_backend over its own TCP connection. No DDS, no Python, and not
+//         queued behind the camera frames sharing the rosbridge socket, so it tracks the
+//         actual link and reads close to `ping` on the command line.
+//   ros — the control path. Costs more than the link alone (a DDS hop to rosapi plus
+//         rosbridge's own work), but it is the only one of the two that can notice
+//         rosbridge itself has stopped answering.
 //
-// Not ICMP: a browser cannot send it, and ui_backend runs ON the robot (network_mode: host),
-// so an ICMP probe from there would measure the robot pinging itself. This is what a game's
-// ping readout is too — an application round trip over the connection already in use.
-//
-// It also catches a wedged rosbridge, which still reports the socket as open while answering
-// nothing. That is the failure the header's "Restart rosbridge" exists for.
-const PROBE_TIMEOUT_SEC = 4
+// Both settle within TIMEOUT_MS, which is shorter than the interval, so probes never overlap.
+const TIMEOUT_MS = 4000
 
-// rosapi is spawned alongside rosbridge by rosbridge_websocket_launch.xml, so this service
-// is available wherever the socket is. The type lives in rosapi_msgs on Jazzy, not rosapi.
 const PING_SERVICE = '/rosapi/get_time'
 const PING_TYPE = 'rosapi_msgs/srv/GetTime'
 
-// Returns round-trip milliseconds, or null when disconnected or the probe went unanswered.
+// Each value is: undefined = no result yet, null = failed or timed out, number = round-trip ms.
 export function usePing(intervalMs = 5000) {
-  const [ms, setMs] = useState(null)
-  const inFlightRef = useRef(false)
+  const [api, setApi] = useState(undefined)
+  const [rosMs, setRosMs] = useState(undefined)
+  const seqRef = useRef(0)
 
   useEffect(() => {
     let cancelled = false
 
-    function probe() {
-      // Skip rather than queue: overlapping probes would time each other's latency.
-      if (inFlightRef.current) return
+    async function probeApi(seq) {
+      const started = performance.now()
+      try {
+        const res = await fetch('/api/health', {
+          cache: 'no-store',                        // a cached 200 would report a fake ~0ms
+          signal: AbortSignal.timeout(TIMEOUT_MS),  // fetch has no timeout of its own
+        })
+        if (cancelled || seq !== seqRef.current) return
+        setApi(res.ok ? Math.round(performance.now() - started) : null)
+      } catch {
+        if (cancelled || seq !== seqRef.current) return
+        setApi(null)
+      }
+    }
+
+    function probeRos(seq) {
       if (!ros.isConnected) {
-        setMs(null)
+        setRosMs(null)
         return
       }
 
-      inFlightRef.current = true
       const started = performance.now()
       const settle = (value) => {
-        if (cancelled) return
-        inFlightRef.current = false
-        setMs(value)
+        clearTimeout(timer)
+        if (cancelled || seq !== seqRef.current) return
+        setRosMs(value)
       }
+
+      // roslib forwards `timeout` to rosbridge in the call_service payload and arms no timer
+      // of its own, so a wedged rosbridge never answers AND never errors. Without this the
+      // probe stays pending forever and the readout freezes on its last good value looking
+      // healthy — which is the failure "Restart rosbridge" exists for. Keep this.
+      const timer = setTimeout(() => settle(null), TIMEOUT_MS)
 
       callRosService(
         PING_SERVICE, PING_TYPE, {},
         () => settle(Math.round(performance.now() - started)),
         () => settle(null),
-        PROBE_TIMEOUT_SEC
+        Math.ceil(TIMEOUT_MS / 1000)
       )
+    }
+
+    function probe() {
+      const seq = ++seqRef.current
+      probeApi(seq)
+      probeRos(seq)
     }
 
     probe()
@@ -57,5 +80,5 @@ export function usePing(intervalMs = 5000) {
     }
   }, [intervalMs])
 
-  return ms
+  return { api, ros: rosMs }
 }

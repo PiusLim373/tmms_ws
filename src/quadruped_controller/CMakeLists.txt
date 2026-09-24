@@ -38,6 +38,13 @@ ament_target_dependencies(quadruped_controller_node
 install(TARGETS quadruped_controller_node
   DESTINATION lib/${PROJECT_NAME})
 
+# error_monitoring_node is Python -- it parses log text and signals a process, neither of
+# which is a hot loop. A plain install(PROGRAMS) keeps the package ament_cmake with no Python
+# package layout to maintain; same approach as mapping_utils. Invoked as
+# `error_monitoring_node.py`, extension included.
+install(PROGRAMS scripts/error_monitoring_node.py
+  DESTINATION lib/${PROJECT_NAME})
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)

@@ -16,11 +16,36 @@ function pingColor(ms) {
   return '#EF4444'
 }
 
+// undefined = not probed yet, null = no reply, number = ms
+function pingLabel(name, value, hint) {
+  if (value === null) return `${name} — no reply${hint ? ` (${hint})` : ''}`
+  if (typeof value === 'number') return `${name} ${value} ms`
+  return `${name} —`
+}
+
 const REBOOT_CONFIRM = {
   rosbridge: {
     title: 'Restart rosbridge',
     body: 'Live data stops for a few seconds and reconnects on its own. Navigation, '
       + 'localization and the loaded map are not affected.',
+  },
+  pointcloud_to_laserscan: {
+    title: 'Restart pointcloud_to_laserscan',
+    body: '/rslidar_scan stops for a few seconds. AMCL and the collision monitor both read '
+      + 'it, so expect a brief localization wobble. The map and pose are not affected.',
+  },
+  lidar_filter: {
+    title: 'Restart the lidar self-filter',
+    body: '/rslidar_points_filtered stops for a few seconds and both costmaps go briefly '
+      + 'blind. Use this when obstacles have stopped appearing. Navigation, localization '
+      + 'and the map are not affected.',
+  },
+  nav2: {
+    title: 'Restart nav2',
+    body: 'The whole navigation stack stops and relaunches, which drops any active goal, '
+      + 'the loaded map and the robot pose — you will have to reload the map and set an '
+      + 'initial pose afterwards. Takes up to a minute. Only do this with the robot '
+      + 'stationary.',
   },
   tmms_ws: {
     title: 'Restart the ROS stack',
@@ -36,7 +61,10 @@ const POLL_TIMEOUT_MS = 180000
 
 export function Header({ connected, battery, theme, onThemeToggle }) {
   const [time, setTime] = useState(() => new Date())
-  const ping = usePing(5000)
+  const { api: apiPing, ros: rosPing } = usePing(5000)
+  // A silent rosbridge is the failure the HTTP figure cannot see, so it colours the readout
+  // even while the link itself is healthy.
+  const pingDown = apiPing === null || rosPing === null
 
   useEffect(() => {
     const id = setInterval(() => setTime(new Date()), 1000)
@@ -164,20 +192,23 @@ export function Header({ connected, battery, theme, onThemeToggle }) {
           </span>
         </div>
 
-        {/* Ping — round trip to rosbridge, refreshed every 5s */}
+        {/* Ping — link round trip to ui_backend, refreshed every 5s */}
         <span
           style={{
             fontFamily: 'var(--font-mono)',
             fontSize: 12,
-            color: ping == null ? 'var(--text-dim)' : pingColor(ping),
+            color: pingDown ? '#EF4444'
+              : typeof apiPing === 'number' ? pingColor(apiPing)
+              : 'var(--text-dim)',
             letterSpacing: '0.04em',
             fontVariantNumeric: 'tabular-nums',
           }}
-          title={ping == null
-            ? 'No reply from rosbridge'
-            : `Round trip to rosbridge: ${ping} ms`}
+          title={[
+            pingLabel('api', apiPing),
+            pingLabel('ros', rosPing, 'rosbridge may need restarting'),
+          ].join('\n')}
         >
-          ⟳ {ping == null ? '--' : `${ping}ms`}
+          ⟳ {typeof apiPing === 'number' ? `${apiPing}ms` : '--'}
         </span>
 
         {/* Clock */}

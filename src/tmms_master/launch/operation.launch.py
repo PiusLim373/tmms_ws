@@ -86,11 +86,17 @@ def generate_launch_description():
                 # Deletes the robot's own body from the cloud before nav2 sees it. The
                 # 360 deg RS32 sits 0.342 m forward of base_link, so the tail is ~1.04 m
                 # behind it -- outside the blind cone, inside the marking band.
+                #
+                # respawn: error_monitoring and the UI's restart button both recover a
+                # wedged filter with a SIGINT, which only restarts it if launch brings it
+                # back. Same reason as rosbridge below.
                 Node(
                     package='pcl_ros',
                     executable='filter_crop_box_node',
                     name='lidar_self_filter',
                     output='screen',
+                    respawn=True,
+                    respawn_delay=2.0,
                     parameters=[{
                         'input_frame': 'base_link',   # frame the BOX is expressed in
                         'output_frame': 'rslidar',    # STVL needs the sensor frame back
@@ -112,16 +118,31 @@ def generate_launch_description():
                 # Listed after quadruped_controller because its target_frame is
                 # base_footprint, which that node's TF provides -- it will log lookup
                 # failures until that TF flows, then recover on its own.
+                #
+                # respawn for the same reason as the crop box: it is a lazy publisher and
+                # /rslidar_scan stays dead after its last subscriber drops, so the only
+                # recovery is a restart.
                 Node(
                     package='pointcloud_to_laserscan',
                     executable='pointcloud_to_laserscan_node',
                     name='pointcloud_to_laserscan',
                     output='screen',
+                    respawn=True,
+                    respawn_delay=2.0,
                     parameters=[pointcloud_to_laserscan_config],
                     remappings=[
                         ('cloud_in', '/rslidar_points'),
                         ('scan', '/rslidar_scan'),
                     ]),
+
+                # Watches /rosout for STVL complaining that a costmap's cloud buffer has
+                # gone stale, restarts lidar_self_filter, and drives /system_error, which
+                # tmms_yasmin turns into the ERROR state (cancelling any active goal).
+                Node(
+                    package='quadruped_controller',
+                    executable='error_monitoring_node.py',
+                    name='error_monitoring',
+                    output='screen'),
 
                 # Starts/stops fast_lio.launch.py on request. That launch is deliberately NOT
                 # included here -- mapping is occasional, and running a full LIO stack the
