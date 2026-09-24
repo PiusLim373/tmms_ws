@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { VideoExportModal } from './ui/VideoExportModal'
+import { ResizeHandle } from './ui/ResizeHandle'
 
 // Absolute URL (not relative) because these are handed off to something
 // else -- pasted into Lichtblick's Remote file dialog, or navigated to
@@ -60,6 +61,8 @@ export function RecordingsPage() {
   const [exportTarget, setExportTarget] = useState(null)
   const [exporting, setExporting] = useState(false)
   const [selectedFile, setSelectedFile] = useState(null)
+  const pageRef = useRef(null)
+  const [listPct, setListPct] = useState(0.17)
 
   useEffect(() => {
     fetch('/api/bags')
@@ -123,11 +126,11 @@ export function RecordingsPage() {
   const lichtblickUrl = `http://${window.location.hostname}:8080/?layoutUrl=${encodeURIComponent(layoutUrl)}`
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
+    <div ref={pageRef} style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
       {/* Left: file list */}
       <div
         className="panel"
-        style={{ width: '17%', flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: '1px solid var(--border)' }}
+        style={{ width: `${listPct * 100}%`, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
       >
         <div className="panel-header">Recordings</div>
         <div style={{ overflowY: 'auto', flex: 1 }}>
@@ -185,8 +188,16 @@ export function RecordingsPage() {
         </div>
       </div>
 
+      <ResizeHandle
+        direction="h"
+        containerRef={pageRef}
+        onResize={setListPct}
+        min={0.10}
+        max={0.40}
+      />
+
       {/* Right: embedded Lichtblick */}
-      <div style={{ width: '80%', flex: 1, minWidth: 0, overflow: 'hidden' }}>
+      <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
         <iframe
           src={lichtblickUrl}
           title="Lichtblick"

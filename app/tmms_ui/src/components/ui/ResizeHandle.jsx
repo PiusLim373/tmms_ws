@@ -11,6 +11,14 @@ export function ResizeHandle({ direction, containerRef, onResize, min = 0.15, ma
     if (!container) return
     const rect = container.getBoundingClientRect()
 
+    // An iframe eats the mouse events over it, so a drag crossing the Lichtblick pane would
+    // stall the moment the cursor touched it. This lid sits above everything for the duration
+    // of the drag, keeping every mousemove on window.
+    const lid = document.createElement('div')
+    lid.style.cssText = 'position:fixed;inset:0;z-index:9999;'
+      + `cursor:${direction === 'v' ? 'row-resize' : 'col-resize'}`
+    document.body.appendChild(lid)
+
     const onMove = (me) => {
       const raw = direction === 'v'
         ? (me.clientY - rect.top)  / rect.height
@@ -18,6 +26,7 @@ export function ResizeHandle({ direction, containerRef, onResize, min = 0.15, ma
       onResize(Math.min(max, Math.max(min, raw)))
     }
     const onUp = () => {
+      lid.remove()
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }

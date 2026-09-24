@@ -15,7 +15,9 @@ export function NavigationPage({ onNavigate, status }) {
   // Boundary offsets from the top of the column, not per-widget heights: ResizeHandle reports
   // an absolute fraction of its container, so storing boundaries lets each handle write its
   // own state directly. Not persisted — same as Mapping and the dashboard's splits.
+  const pageRef = useRef(null)
   const rightColRef = useRef(null)
+  const [lichtblickPct, setLichtblickPct] = useState(0.65)
   const [mapEnd, setMapEnd] = useState(0.32)   // bottom of LoadMapWidget
   const [navEnd, setNavEnd] = useState(0.55)   // bottom of NavigationControlWidget
 
@@ -39,9 +41,9 @@ export function NavigationPage({ onNavigate, status }) {
   const lichtblickUrl = `http://${window.location.hostname}:8080/?ds=rosbridge-websocket&ds.url=${encodeURIComponent(rosbridgeUrl)}&layoutUrl=${encodeURIComponent(layoutUrl)}`
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
-      {/* Left 65%: embedded Lichtblick — where the initial pose and nav goals are set */}
-      <div style={{ width: '65%', flexShrink: 0, overflow: 'hidden', borderRight: '1px solid var(--border)' }}>
+    <div ref={pageRef} style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
+      {/* Left: embedded Lichtblick — where the initial pose and nav goals are set */}
+      <div style={{ width: `${lichtblickPct * 100}%`, flexShrink: 0, overflow: 'hidden' }}>
         <iframe
           src={lichtblickUrl}
           title="Lichtblick"
@@ -49,7 +51,15 @@ export function NavigationPage({ onNavigate, status }) {
         />
       </div>
 
-      {/* Right 35%, split three ways by two drag handles */}
+      <ResizeHandle
+        direction="h"
+        containerRef={pageRef}
+        onResize={setLichtblickPct}
+        min={0.25}
+        max={0.85}
+      />
+
+      {/* Right, split three ways by two drag handles */}
       <div
         ref={rightColRef}
         style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}

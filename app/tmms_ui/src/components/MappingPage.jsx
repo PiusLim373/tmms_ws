@@ -31,7 +31,9 @@ export function MappingPage({ isPaused }) {
   // Height split between the mapping tool and the teleop widget, so the operator can give
   // whichever one they are actually using the room. Not persisted — same as the dashboard's
   // splits in App.jsx.
+  const pageRef = useRef(null)
   const rightColRef = useRef(null)
+  const [lichtblickPct, setLichtblickPct] = useState(0.70)
   const [toolPct, setToolPct] = useState(0.5)
 
   // rosbridge is always launched with ssl=true (operation.launch.py), so it's
@@ -46,11 +48,11 @@ export function MappingPage({ isPaused }) {
   const lichtblickUrl = `http://${window.location.hostname}:8080/?ds=rosbridge-websocket&ds.url=${encodeURIComponent(rosbridgeUrl)}&layoutUrl=${encodeURIComponent(layoutUrl)}`
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
-      {/* Left 65%: embedded Lichtblick. Keyed on the URL so a layout change REMOUNTS the iframe
+    <div ref={pageRef} style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
+      {/* Left: embedded Lichtblick. Keyed on the URL so a layout change REMOUNTS the iframe
           rather than reassigning its src — assigning src pushes an entry onto the iframe's
           session history, and browser Back then walks back through stale layouts. */}
-      <div style={{ width: '65%', flexShrink: 0, overflow: 'hidden', borderRight: '1px solid var(--border)' }}>
+      <div style={{ width: `${lichtblickPct * 100}%`, flexShrink: 0, overflow: 'hidden' }}>
         <iframe
           key={lichtblickUrl}
           src={lichtblickUrl}
@@ -59,7 +61,15 @@ export function MappingPage({ isPaused }) {
         />
       </div>
 
-      {/* Right 35%, split top/bottom by the drag handle */}
+      <ResizeHandle
+        direction="h"
+        containerRef={pageRef}
+        onResize={setLichtblickPct}
+        min={0.25}
+        max={0.85}
+      />
+
+      {/* Right, split top/bottom by the drag handle */}
       <div
         ref={rightColRef}
         style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
