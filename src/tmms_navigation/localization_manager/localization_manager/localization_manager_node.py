@@ -33,12 +33,17 @@ from tmms_msgs.msg import QuadrupedMainStatus
 from tmms_msgs.srv import StringTrigger
 
 # Loading a map or re-seeding the pose is only safe when the robot is not actively driving
-# itself somewhere. Everything except NAVIGATING and ERROR.
+# itself somewhere, which is NAVIGATING alone.
+#
+# ERROR is allowed deliberately. The robot is stopped there (the goal was cancelled on the
+# way in), and it is exactly when an operator needs to reload a map or re-seed a pose as part
+# of recovering -- excluding it deadlocks a fault that the automatic restart could not clear.
 ALLOWED_STATES = frozenset({
     QuadrupedMainStatus.UNLOCALIZED,
     QuadrupedMainStatus.IDLE,
     QuadrupedMainStatus.CANCELED,
     QuadrupedMainStatus.PAUSED,
+    QuadrupedMainStatus.ERROR,
 })
 
 # Same rule as ui_backend.js's MAP_NAME_RE. /map_load takes a bare name and builds the path
@@ -63,7 +68,7 @@ class LocalizationManagerNode(Node):
         self.declare_parameter('yaw_std_max', 0.3)
         self.declare_parameter('acquire_threshold', 0.50)
         self.declare_parameter('lost_threshold', 0.40)
-        self.declare_parameter('lost_debounce_count', 5)
+        self.declare_parameter('lost_debounce_count', 15)
         self.declare_parameter('nomotion_attempts', 20)
         self.declare_parameter('nomotion_interval_sec', 0.3)
         self.declare_parameter('initial_cov_xy', 0.25)

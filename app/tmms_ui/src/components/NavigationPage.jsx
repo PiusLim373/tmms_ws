@@ -1,6 +1,5 @@
 import { useRef, useState } from 'react'
 import { useKeyboard } from '../hooks/useKeyboard'
-import { useTopicActivity } from '../hooks/useTopicActivity'
 import { setQuadrupedPaused } from '../services/rosbridge'
 import { ResizeHandle } from './ui/ResizeHandle'
 import { LoadMapWidget } from './widgets/LoadMapWidget'
@@ -10,7 +9,7 @@ import { QuadrupedWidget } from './widgets/QuadrupedWidget'
 // Smallest share of the column either of the top two widgets may be squeezed to.
 const MIN_SPAN = 0.12
 
-export function NavigationPage({ onNavigate }) {
+export function NavigationPage({ onNavigate, status }) {
   const { heldKeys } = useKeyboard()
 
   // Boundary offsets from the top of the column, not per-widget heights: ResizeHandle reports
@@ -18,15 +17,11 @@ export function NavigationPage({ onNavigate }) {
   // own state directly. Not persisted — same as Mapping and the dashboard's splits.
   const rightColRef = useRef(null)
   const [mapEnd, setMapEnd] = useState(0.32)   // bottom of LoadMapWidget
-  const [navEnd, setNavEnd] = useState(0.68)   // bottom of NavigationControlWidget
+  const [navEnd, setNavEnd] = useState(0.55)   // bottom of NavigationControlWidget
 
-  // Subscribed ONCE here and passed down. All three widgets below read from
-  // quadruped_main_status, and three separate subscriptions to the same 5Hz topic would
-  // both waste bandwidth and let the panels disagree with each other mid-transition.
-  const { lastMsg: status } = useTopicActivity(
-    '/quadruped_main_status', 'tmms_msgs/QuadrupedMainStatus', 1000
-  )
-
+  // quadruped_main_status arrives as a prop from App, which subscribes once for the whole
+  // app: every page needs it, and separate subscriptions to the same 5Hz topic would both
+  // waste bandwidth and let the panels disagree with each other mid-transition.
   const isPaused = status?.is_paused ?? true   // assume paused until told otherwise
   const currentMap = status?.current_map ?? ''
   const localizationStatus = status?.localization_status ?? ''

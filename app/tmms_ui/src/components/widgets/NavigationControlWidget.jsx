@@ -16,27 +16,74 @@ const TONE_COLOR = {
   warn: '#FBBF24',
   busy: '#60A5FA',
   bad: '#F87171',
+  neutral: 'var(--text-dim)',
 }
 
-function Row({ label, value, placeholder }) {
+// Every navigation_state QuadrupedMainStatus.msg declares. The controller overwrites the
+// FSM's value with `paused` whenever the robot is paused, so that one is a real state here.
+const NAV_STATE_TONE = {
+  idle: 'neutral',
+  navigating: 'busy',
+  paused: 'warn',
+  canceled: 'warn',
+  error: 'bad',
+  unlocalized: 'bad',
+  navigation_failed: 'bad',
+}
+
+// Shown under the rows for the states an operator has to act on. `paused` is deliberately
+// absent — it already has its own banner below.
+const NAV_STATE_BANNER = {
+  error: 'Navigation error — check the robot before sending another goal.',
+  navigation_failed: 'Navigation failed — the robot did not reach the goal.',
+  unlocalized: 'Robot is not localized — set an initial pose before navigating.',
+}
+
+// `tone` turns the value into a coloured pill. Without it the row renders as plain text,
+// which is what MAP and LOCALIZATION want.
+function Row({ label, value, placeholder, tone }) {
   const empty = !value
   return (
     <div className="flex items-center justify-between" style={{ padding: '3px 0' }}>
       <span style={{ fontSize: 11, opacity: 0.6, letterSpacing: '0.05em' }}>{label}</span>
-      <span
-        style={{
-          fontFamily: 'var(--font-mono)',
-          fontSize: 12,
-          opacity: empty ? 0.5 : 1,
-          fontStyle: empty ? 'italic' : 'normal',
-          textAlign: 'right',
-          minWidth: 0,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}
-      >
-        {empty ? placeholder : value}
-      </span>
+      {tone && !empty ? (
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            fontFamily: 'var(--font-mono)',
+            fontSize: 11,
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            color: TONE_COLOR[tone],
+            border: `1px solid ${TONE_COLOR[tone]}`,
+            background: 'color-mix(in srgb, currentColor 14%, transparent)',
+            borderRadius: 4,
+            padding: '2px 8px',
+            minWidth: 0,
+            overflow: 'hidden',
+          }}
+        >
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor', flexShrink: 0 }} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</span>
+        </span>
+      ) : (
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 12,
+            opacity: empty ? 0.5 : 1,
+            fontStyle: empty ? 'italic' : 'normal',
+            textAlign: 'right',
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {empty ? placeholder : value}
+        </span>
+      )}
     </div>
   )
 }
@@ -93,7 +140,21 @@ export function NavigationControlWidget({
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 8 }}>
         <Row label="MAP" value={currentMap} placeholder="none — load one above" />
         <Row label="LOCALIZATION" value={localizationStatus} placeholder="unknown" />
-        <Row label="NAV STATE" value={navigationState} placeholder="unknown" />
+        <Row
+          label="NAV STATE"
+          value={navigationState}
+          placeholder="unknown"
+          tone={NAV_STATE_TONE[navigationState] ?? 'neutral'}
+        />
+
+        {NAV_STATE_BANNER[navigationState] && (
+          <div
+            className="flash-warn"
+            style={{ marginTop: 8, fontSize: 11, lineHeight: 1.5, color: TONE_COLOR.bad }}
+          >
+            ⚠ {NAV_STATE_BANNER[navigationState]}
+          </div>
+        )}
 
         {hint && (
           <div

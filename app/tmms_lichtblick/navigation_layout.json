@@ -196,7 +196,7 @@
           "visible": true,
           "colorMode": "map",
           "frameLocked": false,
-          "alpha": 0.9
+          "alpha": 0.5
         },
         "/robot_description": {
           "visible": true,

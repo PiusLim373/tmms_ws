@@ -7,6 +7,7 @@ import { WarningModal } from '../ui/WarningModal'
 import { MapEditorModal } from '../ui/MapEditorModal'
 import { Toast } from '../ui/Toast'
 import { gridToCells, imageToCells, loadMapImage } from '../../lib/gridCodec'
+import { todayPrefix } from '../../lib/dates'
 
 const MAP_NAME_RE = /^[A-Za-z0-9_]+$/
 // Display only, for the empty-state text. mapping_manager_node owns the real path and builds
@@ -96,7 +97,8 @@ export function MappingToolWidget({ subView, onSubViewChange }) {
 
   const [maps, setMaps] = useState([])
   const [maps2d, setMaps2d] = useState([])
-  const [newMapName, setNewMapName] = useState('')
+  // Seeded with today's YYMMDD_ so the operator only types the descriptive half.
+  const [newMapName, setNewMapName] = useState(todayPrefix)
   const [busy, setBusy] = useState(false)
   const [saving, setSaving] = useState(false)
   const [pendingRetry, setPendingRetry] = useState(null)
@@ -683,6 +685,14 @@ export function MappingToolWidget({ subView, onSubViewChange }) {
                 <input
                   value={newMapName}
                   onChange={(e) => setNewMapName(e.target.value.replace(/[^A-Za-z0-9_]/g, ''))}
+                  // Land the caret after the date seed, but only while it is untouched —
+                  // once there is a name to edit, clicking into the middle must still work.
+                  onFocus={(e) => {
+                    if (e.target.value === todayPrefix()) {
+                      const end = e.target.value.length
+                      e.target.setSelectionRange(end, end)
+                    }
+                  }}
                   placeholder="e.g. warehouse_floor_2"
                   className="val-mono"
                   style={{

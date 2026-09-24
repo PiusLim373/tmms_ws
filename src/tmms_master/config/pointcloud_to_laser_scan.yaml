@@ -39,10 +39,14 @@ pointcloud_to_laserscan:
     scan_time: 0.1        # RS spins at 10 Hz
 
     # Ranges are measured from the base_footprint origin, so range_min has to clear the
-    # body, not the lidar. The nav2 footprint corners reach 0.492 m
-    # (sqrt(0.45^2 + 0.2^2)), so 0.5 m trims self-hits from the B2 shell and the Z1 arm.
-    # Lower it if the robot ends up blind to close obstacles.
-    range_min: 0.5
+    # body, not the lidar. The footprint is asymmetric -- [0.45,0.25] front, [-0.70,0.25]
+    # rear -- so its corner radii are 0.515 m (sqrt(0.45^2 + 0.25^2)) at the front and
+    # 0.743 m (sqrt(0.70^2 + 0.25^2)) at the REAR. The rear corner is what sets this.
+    # 0.78 clears it with margin; AMCL gives up nothing, since it matches walls metres out.
+    # The costmaps do not rely on this -- they get the body removed upstream by
+    # lidar_self_filter in operation.launch.py. This is the AMCL path only, kept on the
+    # raw driver topic so a crop-box failure cannot take localization down with it.
+    range_min: 0.78
     range_max: 30.0
 
     # AMCL treats inf as "no return" correctly; inf_epsilon is unused while use_inf is true.

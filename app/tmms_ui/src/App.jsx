@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRos } from './hooks/useRos'
 import { useKeyboard } from './hooks/useKeyboard'
+import { useTopicActivity } from './hooks/useTopicActivity'
+import { setQuadrupedPaused } from './services/rosbridge'
 import { Header } from './components/Header'
 import { Footer } from './components/Footer'
 import { CameraWidget } from './components/widgets/CameraWidget'
@@ -33,6 +35,17 @@ export default function App() {
   const { connected } = useRos()
   const { heldKeys }  = useKeyboard()
 
+  // Subscribed ONCE for the whole app and passed down. Pages unmount on every tab switch, so
+  // a page-level subscription cannot keep the teleop-blocked state consistent across tabs —
+  // the dashboard would show a live-looking quadruped panel whose commands the controller is
+  // silently refusing. Hoisting it also keeps the header's battery reading in step.
+  const { active: statusActive, lastMsg: status } = useTopicActivity(
+    '/quadruped_main_status', 'tmms_msgs/QuadrupedMainStatus', 1000
+  )
+
+  const isPaused = status?.is_paused ?? true   // assume paused until told otherwise
+  const battery = statusActive ? status?.battery_percentage : undefined
+
   return (
     <div
       style={{
@@ -47,6 +60,7 @@ export default function App() {
       {/* ── Header (52px) ── */}
       <Header
         connected={connected}
+        battery={battery}
         theme={theme}
         onThemeToggle={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
       />
@@ -78,7 +92,7 @@ export default function App() {
         >
           {/* TopDown cam */}
           <div style={{ width: `${topdownPct * 100}%`, flexShrink: 0, overflow: 'hidden' }}>
-            <CameraWidget topicName="/topdown_cam/compressed" title="TOPDOWN 360°" />
+            <CameraWidget topicName="/topdown_cam/compressed" title="TOPDOWN" />
           </div>
 
           <ResizeHandle
@@ -134,7 +148,11 @@ export default function App() {
 
           {/* Quadruped — RIGHT */}
           <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-            <QuadrupedWidget heldKeys={heldKeys} />
+            <QuadrupedWidget
+              heldKeys={heldKeys}
+              blocked={!isPaused}
+              onPause={() => setQuadrupedPaused(true)}
+            />
           </div>
         </div>
         </>
@@ -142,9 +160,9 @@ export default function App() {
 
         {page === 'recordings' && <RecordingsPage />}
 
-        {page === 'mapping' && <MappingPage />}
+        {page === 'mapping' && <MappingPage isPaused={isPaused} />}
 
-        {page === 'navigation' && <NavigationPage onNavigate={setPage} />}
+        {page === 'navigation' && <NavigationPage onNavigate={setPage} status={status} />}
 
         {page === 'c2' && <C2Page />}
       </div>

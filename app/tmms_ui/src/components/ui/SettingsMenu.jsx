@@ -1,10 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
 
+// Cheapest first, so the narrowest fix is the one nearest to hand. Every target here must
+// also exist in ui_backend.js's REBOOT_TARGETS and reboot_manager.py's TARGETS.
 const REBOOT_ITEMS = [
   {
     target: 'rosbridge',
     label: 'Restart rosbridge',
     hint: 'Live data only. The robot keeps its map and pose.',
+  },
+  {
+    target: 'pointcloud_to_laserscan',
+    label: 'Restart pointcloud_to_laserscan',
+    hint: 'For a dead /rslidar_scan. Localization reads this.',
+  },
+  {
+    target: 'lidar_filter',
+    label: 'Restart lidar_self_filter',
+    hint: 'For costmaps that stopped seeing obstacles.',
+  },
+  {
+    target: 'nav2',
+    label: 'Restart nav2',
+    hint: 'Drops the map and pose — you must reload both.',
   },
   {
     target: 'tmms_ws',
@@ -82,6 +99,9 @@ export function SettingsMenu({ theme, onThemeToggle, onReboot, busyTarget }) {
             zIndex: 55,
             width: 250,
             padding: '10px 0',
+            // Five reboot items make this tall enough to run off a short viewport.
+            maxHeight: 'calc(100vh - 80px)',
+            overflowY: 'auto',
             background: 'var(--bg)',
             border: '1px solid var(--accent)',
             borderRadius: 4,

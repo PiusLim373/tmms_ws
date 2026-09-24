@@ -36,7 +36,8 @@ RUN apt-get update && \
     libeigen3-dev \
     ros-jazzy-yasmin \
     ros-jazzy-yasmin-* \
-    ros-jazzy-pointcloud-to-laserscan
+    ros-jazzy-pointcloud-to-laserscan \
+    ros-jazzy-spatio-temporal-voxel-layer   
 
 # Setup ROS environment
 SHELL ["/bin/bash", "-c"]

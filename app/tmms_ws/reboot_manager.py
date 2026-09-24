@@ -4,7 +4,7 @@
 Runs on the robot's host OS (NOT inside tmms_run) under supervisor as
 [program:tmms_reboot_manager], because both things it does -- `docker exec` into the ROS
 container and `supervisorctl` -- are host operations the containerised UI backend cannot
-perform. It exposes two restart paths:
+perform. It exposes five restart paths, cheapest first:
 
   rosbridge  Rosbridge occasionally stops feeding the dashboard while the rest of the stack
              is healthy. SIGINT the node inside tmms_run and let `ros2 launch` respawn it
@@ -12,8 +12,23 @@ perform. It exposes two restart paths:
              every other node survive, which is the entire point of having this as a
              separate target from the container restart below.
 
+  pointcloud_to_laserscan
+             A lazy publisher: once its last subscriber drops, /rslidar_scan stays dead even
+             after subscribers come back. Same SIGINT-and-respawn treatment.
+
+  lidar_filter
+             The pcl_ros crop box feeding /rslidar_points_filtered. It intermittently stops
+             reaching the costmaps' STVL buffers while still publishing, and restarting the
+             publisher is the only known fix. error_monitoring_node.py automates this from
+             inside the container; the button is the manual path.
+
+  nav2       Kill the component container and relaunch bringup.launch.py. NOT a respawn and
+             NOT a lifecycle reset -- see _reboot_nav2 for why neither works.
+
   tmms_ws    `supervisorctl restart quadruped:tmms_ws` -- the full soft reboot, for when the
              ROS stack itself is wedged.
+
+Only tmms_ws needs `sudo`; the other four are `docker exec` alone.
 
 Binds loopback only. The UI reaches it through ui_backend.js, which proxies /api/system/*
 here: the dashboard is served over https and a plain http call to this port would be blocked
@@ -57,11 +72,33 @@ SUDO_PASSWORD = os.environ.get('TMMS_SUDO_PASSWORD', 'Unitree0408')
 # -- by luck, and only until someone launches rosbridge differently.
 ROSBRIDGE_PATTERN = 'lib/rosbridge_server/rosbridge_websocket'
 ROSAPI_PATTERN = 'lib/rosapi/rosapi_node'
+P2L_PATTERN = 'lib/pointcloud_to_laserscan/pointcloud_to_laserscan_node'
+LIDAR_FILTER_PATTERN = 'lib/pcl_ros/filter_crop_box_node'
+NAV2_CONTAINER_PATTERN = 'lib/rclcpp_components/component_container_isolated'
+# Matches only a bringup relaunch started by _reboot_nav2, never the entrypoint's
+# `ros2 launch tmms_master operation.launch.py`.
+NAV2_LAUNCH_PATTERN = 'tmms_master bringup.launch.py'
+
+# Sourced inside the container before any `ros2` invocation. docker exec does not inherit the
+# entrypoint's exports, so without this there is no RMW_IMPLEMENTATION, no CYCLONEDDS_URI and
+# no workspace overlay. It prints a banner, hence the redirect.
+CONTAINER_ENV = (
+    'source /home/htxgrrt/.htxgrrt/bin/tmms_ws/custom.env >/dev/null 2>&1; ')
+
+# Container path, inside the logs bind mount, so a failed nav2 relaunch is readable from the
+# host alongside the other supervisor logs.
+NAV2_RELAUNCH_LOG = '/home/htxgrrt/.htxgrrt/logs/nav2_restart.log'
 
 # How long each target is given to come back before the job is marked failed.
 ROSBRIDGE_TIMEOUT_S = 30.0
+NODE_RESPAWN_TIMEOUT_S = 30.0
+NAV2_STOP_TIMEOUT_S = 20.0
+NAV2_START_TIMEOUT_S = 90.0
 TMMS_WS_TIMEOUT_S = 120.0
 POLL_INTERVAL_S = 1.0
+# Each nav2 readiness probe spawns a ROS node and pays DDS discovery, so it is polled far
+# more slowly than a socket connect.
+NAV2_POLL_INTERVAL_S = 5.0
 
 # How long a /status environment probe is reused before being re-taken. See _probe().
 PROBE_TTL_S = 2.0
@@ -142,14 +179,28 @@ def _port_listening(port, host='127.0.0.1', timeout=0.5):
         return False
 
 
-def _wait_for(predicate, timeout_s):
+def _wait_for(predicate, timeout_s, interval_s=POLL_INTERVAL_S):
     """Poll until predicate() is true. Returns True on success, False on timeout."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if predicate():
             return True
-        time.sleep(POLL_INTERVAL_S)
+        time.sleep(interval_s)
     return predicate()
+
+
+def _node_pids(pattern):
+    """pids inside CONTAINER whose command line matches pattern, as a set of strings."""
+    rc, out = _run(['docker', 'exec', CONTAINER, 'pgrep', '-f', pattern], timeout=10.0)
+    # pgrep exits 1 when nothing matches, which is a normal answer here, not an error.
+    return set(out.split()) if rc == 0 else set()
+
+
+def _in_container(shell_cmd, timeout=30.0, detach=False):
+    """Run a shell command inside CONTAINER with the ROS environment sourced."""
+    args = ['docker', 'exec'] + (['-d'] if detach else []) + [
+        CONTAINER, 'bash', '-c', CONTAINER_ENV + shell_cmd]
+    return _run(args, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------------------
@@ -191,6 +242,103 @@ def _reboot_rosbridge():
     return True, 'rosbridge restarted.'
 
 
+def _reboot_respawned_node(label, pattern):
+    """SIGINT a node inside the container and wait for launch to respawn it.
+
+    Waiting for "a matching process exists" would pass immediately on the old one still
+    shutting down, so success means a pid that was NOT in the pre-signal snapshot. That is
+    what actually distinguishes a respawn from a node that never died.
+    """
+    if not _container_running():
+        return False, f'{CONTAINER} is not running -- use the tmms_ws soft reboot instead.'
+
+    before = _node_pids(pattern)
+    if not before:
+        return False, f'no {label} process found in {CONTAINER}.'
+
+    rc, out = _run(
+        ['docker', 'exec', CONTAINER, 'pkill', '-INT', '-f', pattern], timeout=15.0)
+    if rc != 0:
+        return False, f'failed to signal {label}: {out or f"pkill exited {rc}"}'
+
+    if not _wait_for(lambda: bool(_node_pids(pattern) - before), NODE_RESPAWN_TIMEOUT_S):
+        return False, (f'{label} did not come back within {NODE_RESPAWN_TIMEOUT_S:g}s -- '
+                       'is respawn set on it in operation.launch.py?')
+    return True, f'{label} restarted.'
+
+
+def _reboot_pointcloud_to_laserscan():
+    return _reboot_respawned_node('pointcloud_to_laserscan', P2L_PATTERN)
+
+
+def _reboot_lidar_filter():
+    return _reboot_respawned_node('lidar_self_filter', LIDAR_FILTER_PATTERN)
+
+
+def _nav2_active():
+    """True once lifecycle_manager_navigation reports all ten nodes ACTIVE."""
+    _, out = _in_container(
+        'ros2 service call /lifecycle_manager_navigation/is_active std_srvs/srv/Trigger',
+        timeout=NAV2_POLL_INTERVAL_S + 3.0)
+    # `ros2 service call` exits 0 even when the service answers false, so the response text
+    # is what carries the answer.
+    return 'success=True' in out.replace(' ', '')
+
+
+def _reboot_nav2():
+    """Kill the nav2 component container and relaunch bringup.launch.py.
+
+    Neither of the two obvious approaches works here.
+
+    A respawn does not, because use_composition defaults True: bringup.launch.py starts ONE
+    process (nav2_container) and both halves load into it with LoadComposableNodes, which is
+    a launch action that has already run. Respawning the container brings back an EMPTY one.
+
+    A lifecycle RESET+STARTUP does not go far enough: it rebuilds the costmaps and their
+    DataReaders, but inside the same process and the same DDS participant. The fault this
+    button exists for is fixed by restarting the PUBLISHER, which points at the writer side,
+    so a fresh process is the honest hammer.
+
+    The consequence is that map_server and AMCL restart too, so the loaded map and the pose
+    are lost. Nav2 comes back on the startup map at set_initial_pose, exactly as at boot, and
+    the operator has to reload the real map -- the UI's confirm dialog says so.
+    """
+    if not _container_running():
+        return False, f'{CONTAINER} is not running -- use the tmms_ws soft reboot instead.'
+
+    # Reap the launch parent from a previous nav2 restart. rc 1 (no match) is the normal
+    # answer the first time, when nav2 still belongs to operation.launch.py.
+    _run(['docker', 'exec', CONTAINER, 'pkill', '-INT', '-f', NAV2_LAUNCH_PATTERN],
+         timeout=15.0)
+
+    rc, out = _run(
+        ['docker', 'exec', CONTAINER, 'pkill', '-INT', '-f', NAV2_CONTAINER_PATTERN],
+        timeout=15.0)
+    if rc not in (0, 1):
+        return False, f'failed to signal nav2_container: {out or f"pkill exited {rc}"}'
+
+    if not _wait_for(lambda: not _node_pids(NAV2_CONTAINER_PATTERN), NAV2_STOP_TIMEOUT_S):
+        log.warning('nav2_container ignored SIGINT; escalating to SIGKILL')
+        _run(['docker', 'exec', CONTAINER, 'pkill', '-KILL', '-f', NAV2_CONTAINER_PATTERN],
+             timeout=15.0)
+        if not _wait_for(lambda: not _node_pids(NAV2_CONTAINER_PATTERN), 10.0):
+            return False, 'nav2_container would not die; a tmms_ws reboot is the way out.'
+
+    # Detached: this outlives the docker exec and is reaped by the next nav2 restart, or by
+    # the container going down. Detaching also orphans its stdout, so it is redirected into
+    # the mounted log dir -- otherwise a relaunch that fails leaves nothing to read.
+    rc, out = _in_container(
+        'exec ros2 launch tmms_master bringup.launch.py '
+        f'>> {NAV2_RELAUNCH_LOG} 2>&1',
+        timeout=15.0, detach=True)
+    if rc != 0:
+        return False, f'failed to relaunch nav2: {out or f"docker exec exited {rc}"}'
+
+    if not _wait_for(_nav2_active, NAV2_START_TIMEOUT_S, NAV2_POLL_INTERVAL_S):
+        return False, (f'nav2 did not become active within {NAV2_START_TIMEOUT_S:g}s.')
+    return True, 'nav2 restarted. Reload the map and set an initial pose.'
+
+
 def _reboot_tmms_ws():
     """supervisorctl restart of the whole ROS container, then wait for it to come back."""
     rc, out = _sudo(['/usr/bin/supervisorctl', 'restart', SUPERVISOR_PROGRAM])
@@ -209,8 +357,13 @@ def _reboot_tmms_ws():
     return True, 'tmms_ws restarted.'
 
 
+# Menu order, cheapest first. Mirrored in ui_backend.js's REBOOT_TARGETS and the dashboard's
+# REBOOT_ITEMS/REBOOT_CONFIRM -- a name missing from any of the three fails the button.
 TARGETS = {
     'rosbridge': _reboot_rosbridge,
+    'pointcloud_to_laserscan': _reboot_pointcloud_to_laserscan,
+    'lidar_filter': _reboot_lidar_filter,
+    'nav2': _reboot_nav2,
     'tmms_ws': _reboot_tmms_ws,
 }
 
