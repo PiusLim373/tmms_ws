@@ -96,6 +96,9 @@ export function C2Page() {
     }
   }, [status])
 
+  const robotMap = statusLive ? robot?.currentMap || null : null
+  const robotOnThisMap = Boolean(robotMap && mapName && robotMap === mapName)
+
   const [graphs, setGraphs] = useState([])
   const [graph, setGraph] = useState(null)
   const [editing, setEditing] = useState(false)
@@ -420,7 +423,7 @@ export function C2Page() {
             placingType={canEdit ? placingType : null}
             editable={canEdit}
             view={view}
-            robot={statusLive ? robot : null}
+            robot={robotOnThisMap ? robot : null}
             onViewChange={setView}
             onPlace={addPin}
             onSelect={setSelectedId}
@@ -430,6 +433,30 @@ export function C2Page() {
             onHover={setHover}
             onSizeChange={onSizeChange}
           />
+
+          {robotMap && !robotOnThisMap && (
+            <div
+              className="val-mono"
+              style={{
+                position: 'absolute',
+                top: 10,
+                left: '50%',
+                transform: 'translateX(-50%)',
+                maxWidth: 'calc(100% - 20px)',
+                padding: '4px 10px',
+                borderRadius: 4,
+                border: '1px solid #FBBF24',
+                background: 'var(--panel-bg)',
+                color: '#FBBF24',
+                fontSize: 11,
+                textAlign: 'center',
+                pointerEvents: 'none',
+                zIndex: 4,
+              }}
+            >
+              Robot is localized in {robotMap} — not shown on this map
+            </div>
+          )}
 
           {renaming && renamePos && (
             <input

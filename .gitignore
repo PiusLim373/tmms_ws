@@ -54,5 +54,6 @@ log/
 *.tar.gz
 
 app/tmms_recordings/
-
 *.key
+devops/certs/*.key
+src/livox_ros_driver2/
