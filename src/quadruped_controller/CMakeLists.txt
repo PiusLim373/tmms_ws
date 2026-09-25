@@ -12,6 +12,8 @@ find_package(nav_msgs REQUIRED)
 find_package(unitree_api REQUIRED)
 find_package(unitree_go REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tmms_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -30,9 +32,17 @@ target_include_directories(quadruped_controller_node PUBLIC
 target_compile_features(quadruped_controller_node PUBLIC c_std_99 cxx_std_17)
 
 ament_target_dependencies(quadruped_controller_node
-  rclcpp geometry_msgs sensor_msgs nav_msgs unitree_api unitree_go tmms_msgs tf2 tf2_ros)
+  rclcpp geometry_msgs sensor_msgs nav_msgs unitree_api unitree_go std_msgs std_srvs
+  tmms_msgs tf2 tf2_ros)
 
 install(TARGETS quadruped_controller_node
+  DESTINATION lib/${PROJECT_NAME})
+
+# error_monitoring_node is Python -- it parses log text and signals a process, neither of
+# which is a hot loop. A plain install(PROGRAMS) keeps the package ament_cmake with no Python
+# package layout to maintain; same approach as mapping_utils. Invoked as
+# `error_monitoring_node.py`, extension included.
+install(PROGRAMS scripts/error_monitoring_node.py
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)

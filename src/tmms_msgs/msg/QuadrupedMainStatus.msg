@@ -1,13 +1,20 @@
 geometry_msgs/Pose pose
 int32 battery_percentage
 string robot_mode
-string navigation_mode
+string navigation_state
+bool is_paused
+string localization_status
+string current_map
 
-# Enum navigation_mode
+# Enum navigation_state
 string IDLE=idle
 string NAVIGATING=navigating
-string CHARGING=charging
 string ERROR=error
+string UNLOCALIZED=unlocalized
+string CANCELED=canceled
+string PAUSED=paused
+# Distinct from ERROR: a goal that could not be reached, not a broken system.
+string NAVIGATION_FAILED=navigation_failed
 
 # Enum robot_mode
 string ROBOT_IDLE=idle
@@ -22,3 +29,10 @@ string SIT=sit
 string FRONT_FLIP=front_flip
 string FRONT_JUMP=front_jump
 string FRONT_POUNCE=front_pounce
+
+# Enum localization_status
+string NOT_STARTED=not_started
+string PENDING=pending
+string LOCALIZED=localized
+string LOCALIZATION_LOST=localization_lost
+string FAILED=failed

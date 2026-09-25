@@ -1,17 +1,16 @@
 {
   "configById": {
-    "3D!12flisb": {
+    "Image!4d9l1nt": {
       "cameraState": {
+        "distance": 20,
         "perspective": true,
-        "distance": 16.290124999896058,
-        "phi": 49.38663334453223,
-        "thetaOffset": 105.19624832803295,
-        "targetOffset": [
-          -1.9555959710686968,
-          2.950535790361483,
-          0.11466654597457304
-        ],
+        "phi": 60,
         "target": [
+          0,
+          0,
+          0
+        ],
+        "targetOffset": [
           0,
           0,
           0
@@ -22,6 +21,51 @@
           0,
           1
         ],
+        "thetaOffset": 45,
+        "fovy": 45,
+        "near": 0.5,
+        "far": 5000
+      },
+      "followMode": "follow-pose",
+      "scene": {},
+      "transforms": {},
+      "topics": {},
+      "layers": {},
+      "publish": {
+        "type": "point",
+        "poseTopic": "/move_base_simple/goal",
+        "pointTopic": "/clicked_point",
+        "poseEstimateTopic": "/initialpose",
+        "poseEstimateXDeviation": 0.5,
+        "poseEstimateYDeviation": 0.5,
+        "poseEstimateThetaDeviation": 0.26179939
+      },
+      "imageMode": {
+        "imageTopic": "/topdown_cam/compressed"
+      }
+    },
+    "3D!12flisb": {
+      "cameraState": {
+        "distance": 16.290124999896058,
+        "perspective": true,
+        "phi": 49.38663334453223,
+        "target": [
+          0,
+          0,
+          0
+        ],
+        "targetOffset": [
+          -1.9555959710686968,
+          2.950535790361483,
+          0.11466654597457304
+        ],
+        "targetOrientation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "thetaOffset": 105.19624832803295,
         "fovy": 45,
         "near": 0.5,
         "far": 5000
@@ -193,7 +237,7 @@
           "pointShape": "square"
         },
         "/map": {
-          "visible": true,
+          "visible": false,
           "colorMode": "map",
           "frameLocked": false,
           "alpha": 0.5000000000000001
@@ -228,5 +272,10 @@
   "playbackConfig": {
     "speed": 5
   },
-  "layout": "3D!12flisb"
+  "layout": {
+    "direction": "row",
+    "first": "Image!4d9l1nt",
+    "second": "3D!12flisb",
+    "splitPercentage": 40.0
+  }
 }

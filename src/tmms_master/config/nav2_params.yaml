@@ -1,0 +1,562 @@
+amcl:
+  ros__parameters:
+    # Motion model noise. alpha5 is the omni-specific term (translation noise from
+    # strafing) and is only read by OmniMotionModel -- it is dead weight under the
+    # differential model. Stock values; tighten once localisation is running.
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
+
+    # These three match what quadruped_controller already broadcasts:
+    # odom -> base_footprint (planar, flat) -> base_link (gait tilt + body_height).
+    base_frame_id: "base_footprint"
+    odom_frame_id: "odom"
+    global_frame_id: "map"
+
+    # The B2 strafes -- quadruped_controller maps a joystick axis straight to linear.y,
+    # and controller_server's MPPI is already configured with motion_model: "Omni".
+    # On the differential default AMCL's motion model treats lateral motion as
+    # impossible and tries to explain every strafe as rotation.
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+
+    # pointcloud_to_laserscan publishes here, NOT on the default "scan". Note AMCL's
+    # own services are root-relative (/set_initial_pose, /reinitialize_global_localization,
+    # /request_nomotion_update) -- they are not namespaced under /amcl.
+    scan_topic: /rslidar_scan
+
+    # Matches range_max in config/pointcloud_to_laser_scan.yaml. Leaving laser_min_range
+    # at -1.0 makes AMCL adopt the scan message's own range_min (0.5 m, sized to clear
+    # the B2 shell and the Z1 arm).
+    laser_max_range: 30.0
+    laser_min_range: -1.0
+
+    laser_model_type: "likelihood_field"
+    laser_likelihood_max_dist: 2.0
+    max_beams: 300
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+    do_beamskip: false
+    lambda_short: 0.1
+    sigma_hit: 0.2
+    z_hit: 0.9
+    z_max: 0.05
+    z_rand: 0.1
+    z_short: 0.1
+
+    max_particles: 5000
+    min_particles: 500
+    pf_err: 0.05
+    pf_z: 0.99
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
+    resample_interval: 1
+    update_min_a: 0.05
+    update_min_d: 0.05
+
+    # NOT the default (false). Set true so AMCL seeds its filter from initial_pose at
+    # activation instead of sitting idle until /initialpose arrives.
+    #
+    # This exists to unblock nav2 bringup, not to localise the robot. AMCL only broadcasts
+    # map -> odom from sendMapToOdomTransform, which is reachable solely from laserReceived
+    # and gated on TWO flags: first_map_received_ and initial_pose_is_known_. This
+    # parameter opens the second; the startup map at the bottom of this file opens the
+    # first. Without both, global_costmap's on_activate never sees map -> base_footprint,
+    # times out after initial_transform_timeout (60s) and takes the whole navigation half
+    # down with it. See the comment above the bringup include in operation.launch.py.
+    #
+    # No initial_pose block is set, so the seed is x=y=z=yaw=0 -- deliberately meaningless.
+    # The operator still localises for real through the UI
+    # (/lichtblick_initialpose -> localization_manager -> /initialpose), and AMCL accepts
+    # the real map when it arrives because first_map_only defaults to false. Note that a
+    # new map does NOT re-init the particle filter, so the pre-localisation pose is
+    # garbage until that re-seed -- which is exactly what /localization_status must gate
+    # on. Do not infer "localised" from AMCL publishing TF; it publishes from boot now.
+    set_initial_pose: true
+
+    save_pose_rate: 0.5
+    tf_broadcast: true
+    transform_tolerance: 1.0
+
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_footprint
+    odom_topic: /dog_odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    wait_for_service_timeout: 1000
+    action_server_result_timeout: 900.0
+    navigators: ["navigate_to_pose", "navigate_through_poses"]
+    navigate_to_pose:
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+    navigate_through_poses:
+      plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
+    # Our own tree, not nav2's default. The default replans at 1 Hz unconditionally, which on a
+    # costmap that changes every cycle makes the global path flip between routes and the
+    # controller chase each new one. This one keeps the path and only replans when it has
+    # actually gone stale: a new goal, a path the planner no longer considers collision-free,
+    # or 10 s elapsed. The periodic expiry is kept deliberately -- IsPathValid finds the path
+    # point nearest the robot with no distance limit, so after an AMCL correction it happily
+    # keeps validating a path planned from where the robot used to be, and the timer is what
+    # re-anchors it.
+    #
+    # Resolved by ParameterFile(allow_substs=True) in navigation.launch.py; a plain path here
+    # would not expand. The file ships via install(DIRECTORY launch config) in CMakeLists.
+    default_nav_to_pose_bt_xml: "$(find-pkg-share tmms_master)/config/nav_to_pose_with_consistent_replanning_and_if_path_becomes_invalid.xml"
+    # 'default_nav_through_poses_bt_xml' is left at nav2's default
+    # (nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml). The tree above
+    # is a NavigateToPose tree -- it reads {goal}, not {goals} -- so it cannot serve both.
+
+    # plugin_lib_names is used to add custom BT plugins to the executor (vector of strings).
+    # Built-in plugins are added automatically
+    # plugin_lib_names: []
+
+    error_code_names:
+      - compute_path_error_code
+      - follow_path_error_code
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    costmap_update_timeout: 0.30
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+    use_realtime_priority: false
+
+    # Progress checker parameters
+    progress_checker:
+      plugin: "nav2_controller::PoseProgressChecker"
+      required_movement_radius: 0.2
+      required_movement_angle: 0.2
+      movement_time_allowance: 15.0
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.25
+    FollowPath:
+      plugin: "dwb_core::DWBLocalPlanner"
+      debug_trajectory_details: False
+      min_vel_x: 0.0      # set to -0.2 for robot to reverse, but lidar is block, so not advisable
+      min_vel_y: -0.3
+      max_vel_x: 0.5
+      max_vel_y: 0.3
+      max_vel_theta: 0.8
+      min_speed_xy: 0.07
+      max_speed_xy: 0.5
+      min_speed_theta: 0.1
+      acc_lim_x: 3.0
+      acc_lim_y: 3.0
+      acc_lim_theta: 3.2
+      decel_lim_x: -3.0
+      decel_lim_y: -3.0
+      decel_lim_theta: -3.2
+      vx_samples: 20
+      vy_samples: 10
+      vtheta_samples: 20
+      sim_time: 1.7
+      linear_granularity: 0.05
+      angular_granularity: 0.025
+      short_circuit_trajectory_evaluation: True
+      limit_vel_cmd_in_traj: False
+      critics: ["RotateToGoal", "Oscillation", "PreferForward", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      ObstacleFootprint.scale: 0.02
+      PreferForward.scale: 1.0
+      PreferForward.theta_scale: 0.0
+      PathAlign.scale: 32.0
+      GoalAlign.scale: 24.0
+      PathAlign.forward_point_distance: 0.325
+      GoalAlign.forward_point_distance: 0.325
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+    
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_footprint
+      rolling_window: true
+      width: 5
+      height: 5
+      # Must stay equal to stvl_layer.voxel_size below. STVL flattens each occupied voxel
+      # column onto a SINGLE costmap cell -- UpdateROSCostmap() keys the flattened map on
+      # the voxel's world (x,y) and does one worldToMap() per entry -- so a voxel_size
+      # coarser than the resolution paints a dotted lethal band with holes between the
+      # marks. 0.02 is well under STVL's 0.05 default: finer marks, but ~6x the voxel
+      # columns to insert, decay and flatten every cycle, and every stray return gets its
+      # own cell at mark_threshold 0. Raise BOTH to 0.05 if this costs too much CPU.
+      resolution: 0.02
+      # robot_radius: 0.22
+      footprint: "[ [0.45,0.25], [0.45,-0.25], [-0.70,-0.25], [-0.70,0.25] ]"
+      plugins: ["stvl_layer", "inflation_layer"]
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.75
+      stvl_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
+        enabled: True
+        # Why STVL instead of nav2_costmap_2d::VoxelLayer here: VoxelLayer can only
+        # release a cell once a clearing ray has passed through EVERY occupied voxel in
+        # its 1.6 m column (mark_threshold 0 => popcount must reach zero), and the beams
+        # that would do that are the ground-terminated ones that min_obstacle_height
+        # deletes. STVL has no raytracing and no sticky state at all: UpdateROSCostmap()
+        # calls resetMaps() and rebuilds the entire 2D costmap from the voxel grid every
+        # cycle, so a cell is lethal only while a live voxel sits above it. Voxels expire
+        # on voxel_decay whether or not anything is ever seen through them.
+        #
+        # Still the 3D cloud, not /rslidar_scan -- only AMCL is limited to LaserScan.
+        # The costmap transforms into its global_frame through the whole tf chain, so
+        # gait tilt is already accounted for and needs no stabilised frame.
+        voxel_size: 0.02                  # must equal resolution above, see note there
+        voxel_decay: 5.0                 # seconds, since decay_model is linear
+        decay_model: 0                    # 0=linear, 1=exponential, 2=persistent
+        mark_threshold: 0                 # occupied voxels in a column to mark the cell
+        track_unknown_space: False        # local costmap: unseen == free
+        update_footprint_enabled: True
+        combination_method: 1             # 1=max, 0=override
+        publish_voxel_map: True           # NOTE: PointCloud2 on ~/voxel_grid, NOT the
+                                          # nav2_msgs/VoxelGrid the old layer published,
+                                          # so the RViz display has to be re-pointed.
+        transform_tolerance: 2.0
+        mapping_mode: False
+        map_save_duration: 60.0
+        observation_sources: rslidar_mark rslidar_clear
+        rslidar_mark:
+          data_type: PointCloud2
+          topic: /rslidar_points_filtered
+          marking: True
+          clearing: False
+          obstacle_range: 2.5             # ~ the 2.495 m half-width of the 5x5 window
+          min_obstacle_height: 0.2        # ignore ground returns
+          max_obstacle_height: 1.5
+          expected_update_rate: 1.5       # 10 Hz sensor; go stale rather than silently
+                                          # navigate on a frozen cloud if the driver dies
+          observation_persistence: 0.0    # 0 = latest scan only
+          inf_is_valid: False
+          filter: "voxel"                 # ~32.7k pts/scan; decimate before insertion
+          voxel_min_points: 0
+          clear_after_reading: True
+        rslidar_clear:
+          enabled: True
+          data_type: PointCloud2
+          topic: /rslidar_points_filtered
+          marking: False
+          clearing: True
+          # min_z/max_z are RADIAL distances from the sensor, not heights -- they are the
+          # near/far planes of the clearing frustum (_min_d/_max_d in the frustum model).
+          min_z: 0.3
+          max_z: 3.6                      # ~ the 3.53 m corner of the 5x5 window
+          # >>> VERIFY THESE TWO AGAINST YOUR ACTUAL UNIT <<<
+          # Values below are RS-LiDAR-32: vertical FOV -25 deg .. +15 deg, i.e. a 40 deg
+          # span whose centre sits 5 deg BELOW the planar axis. vertical_fov_angle is the
+          # symmetric span; vertical_fov_offset shifts the hourglass to match an
+          # asymmetric lidar. A Helios variant has a different span and these change.
+          vertical_fov_angle: 0.6981      # 40 deg
+          vertical_fov_offset: -0.0873    # -5 deg
+          vertical_fov_padding: 0.05      # metres, 3D lidar frustum only
+          horizontal_fov_angle: 6.2832    # >6.27 trips the full-circle fast path
+          decay_acceleration: 5.0         # 1/s^2, how hard in-frustum voxels are expired
+          model_type: 1                   # 0=depth camera, 1=3D lidar hourglass frustum
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_footprint
+      # robot_radius: 0.22
+      footprint: "[ [0.45,0.25], [0.45,-0.25], [-0.70,-0.25], [-0.70,0.25] ]"
+      resolution: 0.02
+      track_unknown_space: true
+      plugins: ["static_layer", "stvl_layer", "inflation_layer"]
+      stvl_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
+        enabled: True
+        voxel_size: 0.02                  # must equal resolution above, see note there
+        voxel_decay: 5.0                 # seconds, since decay_model is linear
+        decay_model: 0                    # 0=linear, 1=exponential, 2=persistent
+        mark_threshold: 0                 # occupied voxels in a column to mark the cell
+        track_unknown_space: False        # this LAYER never emits NO_INFORMATION. Unknown
+                                          # space is static_layer's to own -- the costmap's
+                                          # own track_unknown_space (true, above) is what
+                                          # makes the planner respect it.
+        update_footprint_enabled: True
+        combination_method: 1             # 1=max, 0=override
+        publish_voxel_map: True
+        transform_tolerance: 2.0
+        mapping_mode: False
+        map_save_duration: 60.0
+        observation_sources: rslidar_mark rslidar_clear
+        rslidar_mark:
+          data_type: PointCloud2
+          topic: /rslidar_points_filtered
+          marking: True
+          clearing: False
+          # Covers the ~5 m travelled between replans. Not further: marks land in the map
+          # frame, so AMCL's yaw error smears them by sigma*range -- past ~6 m that
+          # exceeds inflation_radius and the planner routes around the wrong place.
+          obstacle_range: 6.0
+          min_obstacle_height: 0.2        # ignore ground returns
+          max_obstacle_height: 1.5
+          expected_update_rate: 1.5       # 10 Hz sensor; go stale rather than silently
+                                          # navigate on a frozen cloud if the driver dies
+          observation_persistence: 0.0    # 0 = latest scan only
+          inf_is_valid: False
+          filter: "voxel"                 # ~32.7k pts/scan; decimate before insertion
+          voxel_min_points: 0
+          clear_after_reading: True
+        rslidar_clear:
+          enabled: True
+          data_type: PointCloud2
+          topic: /rslidar_points_filtered
+          marking: False
+          clearing: True
+          # min_z/max_z are RADIAL distances from the sensor, not heights -- they are the
+          # near/far planes of the clearing frustum (_min_d/_max_d in the frustum model).
+          min_z: 0.3
+          max_z: 7.0                      # must exceed obstacle_range, or marks beyond the
+                                          # frustum only ever decay passively
+          vertical_fov_angle: 0.6981      # 40 deg
+          vertical_fov_offset: -0.0873    # -5 deg
+          vertical_fov_padding: 0.05      # metres, 3D lidar frustum only
+          horizontal_fov_angle: 6.2832    # >6.27 trips the full-circle fast path
+          decay_acceleration: 5.0         # 1/s^2, how hard in-frustum voxels are expired
+          model_type: 1                   # 0=depth camera, 1=3D lidar hourglass frustum
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.75
+      always_send_full_costmap: True
+
+
+map_saver:
+  ros__parameters:
+    save_map_timeout: 5.0
+    free_thresh_default: 0.25
+    occupied_thresh_default: 0.65
+    map_subscribe_transient_local: True
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 20.0
+    planner_plugins: ["GridBased"]
+    costmap_update_timeout: 1.0
+    GridBased:
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.5
+      use_astar: false
+      allow_unknown: true
+
+smoother_server:
+  ros__parameters:
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: True
+
+behavior_server:
+  ros__parameters:
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    assisted_teleop:
+      plugin: "nav2_behaviors::AssistedTeleop"
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.1
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.4
+    min_rotational_vel: 0.1
+    rotational_acc_lim: 3.2
+
+waypoint_follower:
+  ros__parameters:
+    loop_rate: 20
+    stop_on_failure: false
+    action_server_result_timeout: 900.0
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: True
+      waypoint_pause_duration: 200
+
+route_server:
+  ros__parameters:
+    # The graph_filepath does not need to be specified since it going to be set by defaults in launch.
+    # If you'd rather set it in the yaml, remove the default "graph" value in the launch file(s).
+    # file & provide full path to map below. If graph config or launch default is provided, it is used
+    # graph_filepath: $(find-pkg-share nav2_route)/graphs/aws_graph.geojson
+    boundary_radius_to_achieve_node: 1.0
+    radius_to_achieve_node: 2.0
+    smooth_corners: true
+    operations: ["AdjustSpeedLimit", "ReroutingService", "CollisionMonitor"]
+    ReroutingService:
+      plugin: "nav2_route::ReroutingService"
+    AdjustSpeedLimit:
+      plugin: "nav2_route::AdjustSpeedLimit"
+    CollisionMonitor:
+      plugin: "nav2_route::CollisionMonitor"
+      max_collision_dist: 3.0
+    edge_cost_functions: ["DistanceScorer", "CostmapScorer"]
+    DistanceScorer:
+      plugin: "nav2_route::DistanceScorer"
+    CostmapScorer:
+      plugin: "nav2_route::CostmapScorer"
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    stamp_smoothed_velocity_with_smoothing_time: False
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.5, 0.3, 0.8]
+    min_velocity: [-0.2, -0.3, -0.8]
+    max_accel: [0.3, 0.3, 1.0]
+    max_decel: [-1.0, -1.0, -1.0]
+    # Unused while feedback is OPEN_LOOP (the smoother then works off its own last
+    # command), but corrected anyway: this robot's odometry is /dog_odom, same as
+    # bt_navigator above. Matters the moment feedback is switched to CLOSED_LOOP.
+    odom_topic: "/dog_odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.05, 0.05, 0.05]
+    velocity_timeout: 1.0
+
+collision_monitor:
+  ros__parameters:
+    base_frame_id: "base_footprint"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"
+    cmd_vel_out_topic: "cmd_vel"
+    state_topic: "collision_monitor_state"
+    transform_tolerance: 0.2
+    source_timeout: 1.0
+    base_shift_correction: True
+    stop_pub_timeout: 2.0
+    # Polygons represent zone around the robot for "stop", "slowdown" and "limit" action types,
+    # and robot footprint for "approach" action type.
+    polygons: ["FootprintApproach"]
+    FootprintApproach:
+      type: "polygon"
+      action_type: "approach"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 1.2
+      simulation_time_step: 0.1
+      min_points: 6
+      visualize: False
+      enabled: True
+    # This topic MUST exist. collision_monitor sits in the velocity chain
+    # (cmd_vel_smoothed -> cmd_vel), and process() treats a source that has never
+    # published as a hard stop: action_type = STOP with req_vel zeroed, logging
+    # "Robot to stop due to invalid source." Pointed at the stock "scan" it would zero
+    # every command nav2 produced and the robot would never move, with only a warning
+    # to show for it.
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "/rslidar_scan"
+      min_height: 0.15
+      max_height: 2.0
+      enabled: True
+
+docking_server:
+  ros__parameters:
+    controller_frequency: 50.0
+    initial_perception_timeout: 5.0
+    wait_charge_timeout: 5.0
+    dock_approach_timeout: 30.0
+    undock_linear_tolerance: 0.05
+    undock_angular_tolerance: 0.1
+    max_retries: 3
+    base_frame: "base_footprint"
+    fixed_frame: "odom"
+    dock_backwards: false
+    dock_prestaging_tolerance: 0.5
+
+    # Types of docks
+    dock_plugins: ['simple_charging_dock']
+    simple_charging_dock:
+      plugin: 'opennav_docking::SimpleChargingDock'
+      docking_threshold: 0.05
+      staging_x_offset: -0.7
+      use_external_detection_pose: true
+      use_battery_status: false # true
+      use_stall_detection: false # true
+
+      external_detection_timeout: 1.0
+      external_detection_translation_x: -0.18
+      external_detection_translation_y: 0.0
+      external_detection_rotation_roll: -1.57
+      external_detection_rotation_pitch: -1.57
+      external_detection_rotation_yaw: 0.0
+      filter_coef: 0.1
+
+    # Dock instances
+    # The following example illustrates configuring dock instances.
+    # docks: ['home_dock']  # Input your docks here
+    # home_dock:
+    #   type: 'simple_charging_dock'
+    #   frame: map
+    #   pose: [0.0, 0.0, 0.0]
+
+    controller:
+      k_phi: 3.0
+      k_delta: 2.0
+      v_linear_min: 0.15
+      v_linear_max: 0.15
+      use_collision_detection: true
+      costmap_topic: "local_costmap/costmap_raw"
+      footprint_topic: "local_costmap/published_footprint"
+      transform_tolerance: 0.1
+      projection_time: 5.0
+      simulation_step: 0.1
+      dock_collision_threshold: 0.3
+
+loopback_simulator:
+  ros__parameters:
+    base_frame_id: "base_footprint"
+    odom_frame_id: "odom"
+    map_frame_id: "map"
+    scan_frame_id: "base_scan"  # tb4_loopback_simulator.launch.py remaps to 'rplidar_link'
+    update_duration: 0.02
+    scan_range_min: 0.05
+    scan_range_max: 30.0
+    scan_angle_min: -3.1415
+    scan_angle_max: 3.1415
+    scan_angle_increment: 0.02617
+    scan_use_inf: true

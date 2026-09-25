@@ -36,6 +36,16 @@ def generate_launch_description():
     urdf_path = os.path.join(description_share, 'urdf', 'tmms_description.urdf.xacro')
     robot_description = ParameterValue(Command(['xacro ', urdf_path]), value_type=str)
 
+    master_share = get_package_share_directory('tmms_master')
+    map_downsampler_config = os.path.join(master_share, 'config', 'map_downsampler.yaml')
+    pointcloud_to_laserscan_config = os.path.join(
+        master_share, 'config', 'pointcloud_to_laser_scan.yaml')
+
+    # Root of the map store. Every map node takes the ROOT and derives its own subfolder
+    # (pcd/ for clouds, png/ for the 2D grids), so this is the single place the location of
+    # the map store is configured.
+    maps_dir = '/home/htxgrrt/.htxgrrt/maps'
+
     return LaunchDescription([
         # Publishes robot_description + TF for the URDF's kinematic tree from
         Node(
@@ -73,21 +83,114 @@ def generate_launch_description():
                     name='quadruped_controller',
                     output='screen'),
 
-                # Starts/stops fast_lio.launch.py on request. That launch is deliberately
-                # NOT included here -- mapping is occasional, and map_downsampler_node
-                # voxelising /Laser_map at 1 Hz is real CPU to burn the rest of the time.
-                # Listed after quadruped_controller because it anchors camera_init from a
-                # live odom -> dog_imu_link lookup, which needs that node's TF flowing.
+                # Deletes the robot's own body from the cloud before nav2 sees it. The
+                # 360 deg RS32 sits 0.342 m forward of base_link, so the tail is ~1.04 m
+                # behind it -- outside the blind cone, inside the marking band.
+                #
+                # respawn: error_monitoring and the UI's restart button both recover a
+                # wedged filter with a SIGINT, which only restarts it if launch brings it
+                # back. Same reason as rosbridge below.
+                Node(
+                    package='pcl_ros',
+                    executable='filter_crop_box_node',
+                    name='lidar_self_filter',
+                    output='screen',
+                    respawn=True,
+                    respawn_delay=2.0,
+                    parameters=[{
+                        'input_frame': 'base_link',   # frame the BOX is expressed in
+                        'output_frame': 'rslidar',    # STVL needs the sensor frame back
+                        'min_x': -0.80, 'max_x': 0.55,
+                        'min_y': -0.33, 'max_y': 0.33,
+                        'min_z': -1.00, 'max_z': 0.80,  # z is from the trunk, not ground
+                        'negative': True,             # drop what is INSIDE the box
+                        'keep_organized': False,      # delete points, do not leave NaNs
+                    }],
+                    remappings=[
+                        ('input', '/rslidar_points'),
+                        ('output', '/rslidar_points_filtered'),
+                    ]),
+
+                # Flattens /rslidar_points into the 2D /rslidar_scan that nav2_amcl needs
+                # (AMCL is LaserScan-only). Subscribes to the raw driver topic rather than
+                # /converted_rslidar_points, because the converter only runs inside
+                # fast_lio.launch.py and navigation has to work with mapping stopped.
+                # Listed after quadruped_controller because its target_frame is
+                # base_footprint, which that node's TF provides -- it will log lookup
+                # failures until that TF flows, then recover on its own.
+                #
+                # respawn for the same reason as the crop box: it is a lazy publisher and
+                # /rslidar_scan stays dead after its last subscriber drops, so the only
+                # recovery is a restart.
+                Node(
+                    package='pointcloud_to_laserscan',
+                    executable='pointcloud_to_laserscan_node',
+                    name='pointcloud_to_laserscan',
+                    output='screen',
+                    respawn=True,
+                    respawn_delay=2.0,
+                    parameters=[pointcloud_to_laserscan_config],
+                    remappings=[
+                        ('cloud_in', '/rslidar_points'),
+                        ('scan', '/rslidar_scan'),
+                    ]),
+
+                # Watches /rosout for STVL complaining that a costmap's cloud buffer has
+                # gone stale, restarts lidar_self_filter, and drives /system_error, which
+                # tmms_yasmin turns into the ERROR state (cancelling any active goal).
+                Node(
+                    package='quadruped_controller',
+                    executable='error_monitoring_node.py',
+                    name='error_monitoring',
+                    output='screen'),
+
+                # Starts/stops fast_lio.launch.py on request. That launch is deliberately NOT
+                # included here -- mapping is occasional, and running a full LIO stack the
+                # rest of the time is real CPU to burn. Listed after quadruped_controller
+                # because it anchors camera_init from a live odom -> dog_imu_link lookup,
+                # which needs that node's TF flowing.
                 Node(
                     package='mapping_utils',
                     executable='mapping_manager_node.py',
                     name='mapping_manager',
                     output='screen',
-                    parameters=[{'maps_dir': '/home/htxgrrt/.htxgrrt/maps'}]),
+                    parameters=[{'maps_dir': maps_dir}]),
+
+                # Flattens a saved .pcd into the OccupancyGrid nav2 needs. Always up: it holds
+                # no map until ~/load_pcd is called, and once loaded it publishes only on
+                # change, so idling costs nothing. Its filter thresholds are what the UI's
+                # sliders drive over ros2 param set.
+                Node(
+                    package='mapping_utils',
+                    executable='map_flattener_node',
+                    name='map_flattener',
+                    output='screen',
+                    parameters=[{'maps_dir': maps_dir}]),
+
+                # Voxelises point clouds for the bridge, in both directions of the workflow:
+                # /Laser_map -> /downsampled_fastlio_map live during a mapping session, and
+                # ~/load_pcd -> /downsampled_pcd_map for 3D context during navigation. It
+                # used to live in fast_lio.launch.py, but a pure subscriber costs nothing
+                # while its input topic does not exist, and the load service has to be
+                # reachable when FAST-LIO is NOT running.
+                Node(
+                    package='mapping_utils',
+                    executable='map_downsampler_node',
+                    name='map_downsampler',
+                    output='screen',
+                    parameters=[map_downsampler_config, {'maps_dir': maps_dir}]),
 
                 # Rosbridge WebSocket server (exposes ROS2 topics over wss://
                 # — the dashboard now loads over https, and browsers block a
                 # plain ws:// connection from an https page as mixed content)
+                #
+                # respawn is what lets reboot_manager.py restart a wedged rosbridge with
+                # nothing but a SIGINT: launch brings the node back with these exact
+                # arguments, so the SSL paths and message limits do not have to be repeated
+                # in a second `ros2 launch` invocation that would then outlive this one. The
+                # XML applies the flag to both nodes it spawns (rosbridge_websocket and
+                # rosapi). It also self-heals an unattended crash, which is the failure this
+                # whole restart path exists for.
                 IncludeLaunchDescription(
                     AnyLaunchDescriptionSource([
                         get_package_share_directory('rosbridge_server'),
@@ -99,13 +202,80 @@ def generate_launch_description():
                         'keyfile': '/home/htxgrrt/.htxgrrt/certs/tmms_b2.key',
                         'max_message_size': '50000000',
                         'use_compression': 'true',
+                        'respawn': 'true',
                     }.items()),
+
+                # Gatekeeper between the UI and nav2's localization services. The UI never
+                # calls nav2 directly: /map_load and /lichtblick_initialpose come here, get
+                # checked against the robot's state, and are only then forwarded. Also owns
+                # /localization_status and /current_map, which the whole Navigation tab
+                # renders from.
+                #
+                # Ordering does not matter: every outbound call goes through a bounded
+                # wait_for_service, so a nav2 that is still coming up costs a logged error,
+                # never a hang.
+                Node(
+                    package='localization_manager',
+                    executable='localization_manager_node',
+                    name='localization_manager',
+                    output='screen',
+                    parameters=[{'maps_dir': maps_dir}]),
+
+                # Navigation state machine. Holds in UNLOCALIZED until localization_manager
+                # reports a fix, then forwards /lichtblick_navgoal to nav2 and routes the
+                # outcome to IDLE / CANCELED / NAVIGATION_FAILED. Publishes /yasmin_state,
+                # which quadruped_controller mirrors into quadruped_main_status, and hosts
+                # /cancel_goal.
+                #
+                # Also order-independent: it blocks on /localization_status before touching
+                # nav2 at all, and bounds its wait_for_server per goal.
+                Node(
+                    package='tmms_yasmin',
+                    executable='tmms_yasmin_node',
+                    name='tmms_yasmin',
+                    output='screen'),
 
                 # Rosbag recording (cameras + quadruped status)
                 IncludeLaunchDescription(
                     PythonLaunchDescriptionSource([
                         get_package_share_directory('tmms_master'),
                         '/launch/rosbag_record.launch.py',
+                    ])),
+
+                # Full nav2 stack -- bringup.launch.py starts the component container and
+                # pulls in both halves (localization.launch.py, navigation.launch.py),
+                # which are local forks of nav2's. Do NOT point this at
+                # navigation.launch.py: that is only the navigation half and would come up
+                # with no map_server or AMCL.
+                #
+                # Unlike fast_lio.launch.py this IS included here: the UI's Load Map button
+                # needs map_server up to accept /map_server/load_map, and the state machine
+                # starts in Unlocalized, which means AMCL has to be running from boot.
+                #
+                # A member of this 5s block rather than a timer of its own. It used to sit
+                # behind a separate 15s TimerAction meant to let quadruped_controller's
+                # odom -> base_footprint TF and pointcloud_to_laserscan's /rslidar_scan land
+                # first. That delay was guarding the wrong thing: both of those only have to
+                # exist by the time the costmaps activate, and neither was what failed.
+                #
+                # What actually failed is global_costmap's on_activate, which blocks on
+                # map -> base_footprint. That transform only exists once AMCL has BOTH a map
+                # and a pose (sendMapToOdomTransform is reachable only from laserReceived,
+                # and gated on first_map_received_ AND initial_pose_is_known_). Costmap2DROS
+                # gives up after initial_transform_timeout -- 60s by default -- returns
+                # FAILURE, planner_server fails with it, and lifecycle_manager aborts the
+                # whole navigation half with no retry, leaving bt_navigator INACTIVE and
+                # every goal answered with "Action server is inactive. Rejecting the goal."
+                # Launched by hand the robot is already localised, so the transform is there
+                # immediately, which is why this only ever failed through this file.
+                #
+                # No launch delay can fix that -- it is a 60s deadline on the operator, not
+                # an ordering race. The startup map plus amcl's set_initial_pose is what
+                # closes it; see the map_server block in config/nav2_params.yaml.
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource([
+                        get_package_share_directory('tmms_master'),
+                        '/launch/bringup.launch.py',
                     ])),
 
             ]),

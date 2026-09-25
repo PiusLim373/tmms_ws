@@ -38,7 +38,9 @@ function jointTempColor(c) {
   return '#EF4444'
 }
 
-export function QuadrupedWidget({ heldKeys }) {
+// blocked / onPause / onNavigateDashboard are optional, so the dashboard and mapping pages
+// keep working unchanged; only the navigation page passes them.
+export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboard }) {
   // Browser-native flight controller capture — publishes directly to /joy,
   // a drop-in replacement for the native joy_node. Runs only while this
   // widget is mounted (see useTopicActivity('/joy', ...) below for the
@@ -239,7 +241,7 @@ export function QuadrupedWidget({ heldKeys }) {
         onCancel={() => { setModalOpen(false); setPendingMode(null) }}
       />
 
-      <div className="panel flex flex-col h-full" style={{ overflow: 'hidden' }}>
+      <div className="panel flex flex-col h-full" style={{ overflow: 'hidden', position: 'relative' }}>
         {/* Title bar */}
         <div className="panel-header">
           <span>QUADRUPED CONTROL</span>
@@ -282,85 +284,126 @@ export function QuadrupedWidget({ heldKeys }) {
 
         {/* Main content */}
         <div className="flex flex-1 min-h-0 gap-0">
-          {/* Left: controls — side-by-side GearShift + SpeedSelector, hints pinned to bottom */}
-          <div
-            className="flex flex-col gap-3 p-3 flex-shrink-0"
-            style={{ minWidth: 300, height: '100%' }}
-          >
-            <div className="flex gap-2" style={{ flex: 1, minHeight: 0, alignItems: 'flex-start' }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <GearShift
-                  mode={actualMode}
-                  onModeChange={requestModeChange}
-                  disabled={serviceStatus.loading || joyActive}
-                  uncertain={modeUncertain}
-                />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <SpeedSelector speed={speedLevel} onChange={setSpeedLevel} disabled={joyActive} />
-              </div>
-            </div>
-
-            {/* Key hints — keyboard mode */}
-            {!joyActive && (
+          {/* Everything the blocked overlay covers. Scoped to the control surfaces rather
+              than the whole panel so the joint temps stay readable while nav2 drives — an
+              overheating joint is exactly what you want to catch during an autonomous run. */}
+          <div className="flex flex-1 min-w-0" style={{ position: 'relative' }}>
+            {/* Blocked overlay — shown while nav2 owns the robot.
+                This is an AFFORDANCE, not a safety mechanism: quadruped_controller already
+                refuses /quadruped_cmd_vel_ui, /joy and all three teleop services while
+                unpaused, so keyboard input reaching past this overlay changes nothing. */}
+            {blocked && (
               <div
-                className="flex flex-col gap-0.5"
                 style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 10,
-                  color: 'var(--text-dim)',
-                  marginTop: 'auto',
+                  position: 'absolute',
+                  inset: 0,
+                  zIndex: 10,
+                  background: 'var(--panel-bg)',
+                  opacity: 0.97,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 10,
+                  padding: 16,
+                  textAlign: 'center',
                 }}
               >
-                <span>↑↓ Forward/Back  ←→ Strafe</span>
-                <span>⇧+←→ Yaw</span>
-                <span style={{ color: isWalkMode ? '#22C55E' : '#EF4444', fontSize: 11 }}>
-                  {isWalkMode ? '✓ Walk — joystick active' : '✗ Walk mode required'}
-                </span>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>Teleop disabled</div>
+                <div style={{ fontSize: 11, opacity: 0.7, lineHeight: 1.6, maxWidth: 300 }}>
+                  nav2 currently owns the robot. Pause it to take manual control — nav2's
+                  velocity is dropped while paused.
+                </div>
+                <button
+                  onClick={onPause}
+                  className="btn-icon"
+                  style={{ padding: '8px 20px', fontSize: 12 }}
+                >
+                  ⏸ Pause Robot
+                </button>
               </div>
             )}
 
-            {/* Walk mode warning when gamepad active but not in WALK */}
-            {joyActive && !isWalkMode && (
-              <span
-                className="flash-warn"
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 11,
-                  color: '#EF4444',
-                  marginTop: 'auto',
-                }}
-              >
-                ✗ Walk mode required
-              </span>
-            )}
-
-            <Toast visible={joyActive} message="Gamepad active — UI joystick disabled" />
-          </div>
-
-          {/* Right: TRANSLATION joystick + ROTATION knob (vertical) */}
-          <div
-            className="flex flex-1 items-center justify-center gap-4 p-4"
-            style={{ borderLeft: '1px solid var(--border)' }}
-          >
-            <JoystickDisplay
-              x={joystickX}
-              y={joystickY}
-              label="TRANSLATION"
-              hints={JOY_HINTS}
-              size={200}
-              maxValue={linearSpeed}
-              onChange={!joyActive && isWalkMode ? handleJoyDrag : undefined}
-            />
-
-            <AxisKnob
-              label="ROTATION"
-              value={yawVal}
-              orientation="v"
-              trackLen={200}
-              maxValue={rotSpeed}
-              onChange={!joyActive && isWalkMode ? handleYawDrag : undefined}
-            />
+            {/* Left: controls — side-by-side GearShift + SpeedSelector, hints pinned to bottom */}
+            <div
+              className="flex flex-col gap-3 p-3 flex-shrink-0"
+              style={{ minWidth: 300, height: '100%' }}
+            >
+              <div className="flex gap-2" style={{ flex: 1, minHeight: 0, alignItems: 'flex-start' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <GearShift
+                    mode={actualMode}
+                    onModeChange={requestModeChange}
+                    disabled={serviceStatus.loading || joyActive}
+                    uncertain={modeUncertain}
+                  />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <SpeedSelector speed={speedLevel} onChange={setSpeedLevel} disabled={joyActive} />
+                </div>
+              </div>
+  
+              {/* Key hints — keyboard mode */}
+              {!joyActive && (
+                <div
+                  className="flex flex-col gap-0.5"
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 10,
+                    color: 'var(--text-dim)',
+                    marginTop: 'auto',
+                  }}
+                >
+                  <span>↑↓ Forward/Back  ←→ Strafe</span>
+                  <span>⇧+←→ Yaw</span>
+                  <span style={{ color: isWalkMode ? '#22C55E' : '#EF4444', fontSize: 11 }}>
+                    {isWalkMode ? '✓ Walk — joystick active' : '✗ Walk mode required'}
+                  </span>
+                </div>
+              )}
+  
+              {/* Walk mode warning when gamepad active but not in WALK */}
+              {joyActive && !isWalkMode && (
+                <span
+                  className="flash-warn"
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 11,
+                    color: '#EF4444',
+                    marginTop: 'auto',
+                  }}
+                >
+                  ✗ Walk mode required
+                </span>
+              )}
+  
+              <Toast visible={joyActive} message="Gamepad active — UI joystick disabled" />
+            </div>
+  
+            {/* Right: TRANSLATION joystick + ROTATION knob (vertical) */}
+            <div
+              className="flex flex-1 items-center justify-center gap-4 p-4"
+              style={{ borderLeft: '1px solid var(--border)' }}
+            >
+              <JoystickDisplay
+                x={joystickX}
+                y={joystickY}
+                label="TRANSLATION"
+                hints={JOY_HINTS}
+                size={200}
+                maxValue={linearSpeed}
+                onChange={!joyActive && isWalkMode ? handleJoyDrag : undefined}
+              />
+  
+              <AxisKnob
+                label="ROTATION"
+                value={yawVal}
+                orientation="v"
+                trackLen={200}
+                maxValue={rotSpeed}
+                onChange={!joyActive && isWalkMode ? handleYawDrag : undefined}
+              />
+            </div>
           </div>
 
           {/* Temps: 12 joint motor temperatures from /lf/lowstate */}
@@ -384,6 +427,37 @@ export function QuadrupedWidget({ heldKeys }) {
             })}
           </div>
         </div>
+
+        {/* Only on pages that pass the handler — the dashboard itself has no reason to
+            link to itself. A button, not an <a href>: the app navigates by setPage state. */}
+        {onNavigateDashboard && (
+          <div
+            style={{
+              flexShrink: 0,
+              padding: '5px 12px',
+              borderTop: '1px solid var(--border)',
+              fontSize: 10,
+              opacity: 0.6,
+              lineHeight: 1.5,
+            }}
+          >
+            Need the arm and quadruped together? Use the{' '}
+            <button
+              onClick={onNavigateDashboard}
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                font: 'inherit',
+                color: 'var(--accent-bright)',
+                textDecoration: 'underline',
+                cursor: 'pointer',
+              }}
+            >
+              main dashboard
+            </button>.
+          </div>
+        )}
       </div>
     </>
   )

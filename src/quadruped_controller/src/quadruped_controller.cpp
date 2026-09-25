@@ -34,6 +34,41 @@ QuadrupedController::QuadrupedController()
     "/quadruped_cmd_vel_ui", 10,
     std::bind(&QuadrupedController::cmdVelUiCallback, this, std::placeholders::_1));
 
+  // Nav2's final velocity, after velocity_smoother and collision_monitor. Plain Twist
+  // rather than TwistStamped: nav2's TwistPublisher only stamps when
+  // enable_stamped_cmd_vel is true, which defaults false and nav2_params.yaml never sets.
+  cmd_vel_nav_sub_ = create_subscription<geometry_msgs::msg::Twist>(
+    "/cmd_vel", 10,
+    std::bind(&QuadrupedController::cmdVelNavCallback, this, std::placeholders::_1));
+
+  // Published by the YASMIN node, which does not exist yet -- until it does, the cached
+  // value stays UNLOCALIZED and that is what navigation_state reports while unpaused.
+  // TRANSIENT_LOCAL for the same reason as /localization_status below: tmms_yasmin
+  // publishes only on state entry, so a volatile subscriber that started second would
+  // report the default until the next transition -- and sitting in IDLE, that could be
+  // hours.
+  yasmin_state_sub_ = create_subscription<std_msgs::msg::String>(
+    "/yasmin_state",
+    rclcpp::QoS(1).transient_local(),
+    std::bind(&QuadrupedController::yasminStateCallback, this, std::placeholders::_1));
+
+  // TRANSIENT_LOCAL to match localization_manager's latched publisher. This is NOT
+  // optional: a default (volatile) subscriber still connects -- durability compatibility
+  // runs publisher-stronger-than-subscriber -- but never receives the latched sample. The
+  // two nodes start in arbitrary order, so a volatile sub would report not_started
+  // indefinitely whenever this node happens to come up second.
+  localization_status_sub_ = create_subscription<std_msgs::msg::String>(
+    "/localization_status",
+    rclcpp::QoS(1).transient_local(),
+    std::bind(&QuadrupedController::localizationStatusCallback, this, std::placeholders::_1));
+
+  // Latched too -- same reasoning: the UI needs to know which map is live the moment it
+  // connects, not whenever the operator next loads one.
+  current_map_sub_ = create_subscription<std_msgs::msg::String>(
+    "/current_map",
+    rclcpp::QoS(1).transient_local(),
+    std::bind(&QuadrupedController::currentMapCallback, this, std::placeholders::_1));
+
   consolidated_pub_ = create_publisher<geometry_msgs::msg::Twist>(
     "/consolidated_quadruped_cmd_vel", 10);
 
@@ -70,6 +105,11 @@ QuadrupedController::QuadrupedController()
     std::bind(&QuadrupedController::quadrupedHeightCallback, this,
       std::placeholders::_1, std::placeholders::_2));
 
+  quadruped_pause_srv_ = create_service<std_srvs::srv::SetBool>(
+    "~/quadruped_pause",
+    std::bind(&QuadrupedController::quadrupedPauseCallback, this,
+      std::placeholders::_1, std::placeholders::_2));
+
   motion_switcher_pub_ = create_publisher<unitree_api::msg::Request>(
     "/api/motion_switcher/request", rclcpp::QoS(10));
 
@@ -90,6 +130,63 @@ QuadrupedController::QuadrupedController()
   RCLCPP_INFO(get_logger(), "Quadruped Controller node started");
 }
 
+void QuadrupedController::cmdVelNavCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(vel_mutex_);
+  // Mirror of the teleop gate: while the operator has the robot, nav2's stream is
+  // dropped on the floor rather than cached, so it is stale again on the next unpause.
+  if (paused_) {
+    return;
+  }
+  nav_twist_ = *msg;
+  last_nav_time_ = this->now();
+}
+
+void QuadrupedController::yasminStateCallback(const std_msgs::msg::String::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(vel_mutex_);
+  yasmin_state_ = msg->data;
+}
+
+void QuadrupedController::localizationStatusCallback(
+  const std_msgs::msg::String::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(vel_mutex_);
+  localization_status_ = msg->data;
+}
+
+void QuadrupedController::currentMapCallback(const std_msgs::msg::String::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(vel_mutex_);
+  current_map_ = msg->data;
+}
+
+bool QuadrupedController::isPaused()
+{
+  std::lock_guard<std::mutex> lock(vel_mutex_);
+  return paused_;
+}
+
+bool QuadrupedController::rejectUnlessPaused(std::string & message)
+{
+  if (isPaused()) {
+    return false;
+  }
+  message = "Robot is not paused; nav2 owns motion. Pause via ~/quadruped_pause first.";
+  return true;
+}
+
+void QuadrupedController::staleAllInputsLocked()
+{
+  // Backdate every input so nothing cached before the switch can drive the robot after
+  // it. Without this a stick held during autonomy would take effect the instant pause
+  // engages, and teleop would keep steering for up to 0.5s after handing over to nav2.
+  const rclcpp::Time kNever{0, 0, RCL_ROS_TIME};
+  last_joy_time_ = kNever;
+  last_ui_time_ = kNever;
+  last_nav_time_ = kNever;
+}
+
 bool QuadrupedController::isJoyInputZero(const sensor_msgs::msg::Joy::SharedPtr & msg) const
 {
   constexpr float kEpsilon = 0.01f;
@@ -105,6 +202,11 @@ bool QuadrupedController::isJoyInputZero(const sensor_msgs::msg::Joy::SharedPtr 
 void QuadrupedController::joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg)
 {
   std::lock_guard<std::mutex> lock(vel_mutex_);
+  // Unpaused means nav2 owns the robot: drop the axes AND the mode buttons, and leave
+  // last_joy_time_ alone so joy is already stale by the time pause comes back.
+  if (!paused_) {
+    return;
+  }
   bool is_zero = isJoyInputZero(msg);
   if (is_zero && prev_joy_zero_) {
     // Idle joy still publishing zero at a high rate (browser gamepad driver) —
@@ -126,6 +228,9 @@ void QuadrupedController::joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg
 void QuadrupedController::cmdVelUiCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
 {
   std::lock_guard<std::mutex> lock(vel_mutex_);
+  if (!paused_) {
+    return;
+  }
   ui_twist_ = *msg;
   last_ui_time_ = this->now();
 }
@@ -226,6 +331,16 @@ void QuadrupedController::mainStatusTimerCallback()
   status.pose = pose_;
   status.battery_percentage = battery_soc_;
   status.robot_mode = modeToString(mode_);
+  {
+    std::lock_guard<std::mutex> lock(vel_mutex_);
+    status.is_paused = paused_;
+    // PAUSED overlays whatever the state machine last reported; unpausing falls back to
+    // that cached value, which stays UNLOCALIZED until the YASMIN node starts publishing.
+    status.navigation_state =
+      paused_ ? tmms_msgs::msg::QuadrupedMainStatus::PAUSED : yasmin_state_;
+    status.localization_status = localization_status_;
+    status.current_map = current_map_;
+  }
   main_status_pub_->publish(status);
 }
 
@@ -262,9 +377,23 @@ void QuadrupedController::moveTimerCallback()
     auto now = this->now();
     bool joy_fresh = (now - last_joy_time_).seconds() < 0.5;
     bool ui_fresh = (now - last_ui_time_).seconds() < 1.0;
-    bool input_fresh = joy_fresh || ui_fresh;
+    // Hard mode switch, not a priority mux: paused hands the robot to the operator and
+    // ignores nav2, unpaused hands it to nav2 and ignores the operator. The paused_
+    // guards duplicate the callback gating on purpose -- this is the one place the whole
+    // arbitration is visible.
+    //
+    // 0.3s for nav: nav2 emits at velocity_smoother's smoothing_frequency (20Hz, 50ms)
+    // while a goal is active, so this bridges normal gaps with margin. Staleness is a
+    // reliable idle signal because the smoother latches `stopped_` and stops publishing
+    // once it has decelerated -- it never spams zeros.
+    joy_fresh = joy_fresh && paused_;
+    ui_fresh = ui_fresh && paused_;
+    bool nav_fresh = !paused_ && (now - last_nav_time_).seconds() < 0.3;
+    bool input_fresh = joy_fresh || ui_fresh || nav_fresh;
     static const geometry_msgs::msg::Twist kZeroTwist{};
-    const auto & chosen = joy_fresh ? joy_twist_ : (ui_fresh ? ui_twist_ : kZeroTwist);
+    const auto & chosen = joy_fresh ? joy_twist_
+                        : (ui_fresh ? ui_twist_
+                        : (nav_fresh ? nav_twist_ : kZeroTwist));
     lx = static_cast<float>(chosen.linear.x);
     ly = static_cast<float>(chosen.linear.y);
     az = static_cast<float>(chosen.angular.z);
@@ -428,13 +557,75 @@ void QuadrupedController::quadrupedCmdCallback(
   const tmms_msgs::srv::StringTrigger::Request::SharedPtr req,
   tmms_msgs::srv::StringTrigger::Response::SharedPtr res)
 {
+  // The gate lives here and not in executeCmd, because the unpause path below calls
+  // executeCmd("balance_stand") internally and has to bypass it.
+  if (rejectUnlessPaused(res->message)) {
+    res->success = false;
+    return;
+  }
   res->success = executeCmd(req->data, res->message);
+}
+
+void QuadrupedController::quadrupedPauseCallback(
+  const std_srvs::srv::SetBool::Request::SharedPtr req,
+  std_srvs::srv::SetBool::Response::SharedPtr res)
+{
+  if (req->data) {
+    {
+      std::lock_guard<std::mutex> lock(vel_mutex_);
+      paused_ = true;
+      staleAllInputsLocked();
+    }
+
+    // Explicit stop on entering pause rather than waiting for the staleness path, so the
+    // robot is guaranteed stationary the moment the operator takes over.
+    unitree_api::msg::Request req_zero;
+    sport_req_.Move(req_zero, 0.0f, 0.0f, 0.0f);
+    consolidated_pub_->publish(geometry_msgs::msg::Twist{});
+
+    res->success = true;
+    res->message = "Paused: teleop enabled, nav2 cmd_vel ignored";
+    RCLCPP_INFO(get_logger(), "Paused: teleop enabled, nav2 cmd_vel ignored");
+    return;
+  }
+
+  // Unpausing has to leave the robot walkable, or nav2 would command a base that is
+  // holding an Euler pose and never moves. balance_stand runs deactivatePose(), which
+  // sets control_mode_ back to kMove.
+  //
+  // vel_mutex_ must NOT be held here: executeCmd takes it itself, and calls
+  // deactivatePose() which takes it again.
+  std::string cmd_message;
+  if (!executeCmd("balance_stand", cmd_message)) {
+    // Currently unreachable -- executeCmd only returns false for an unrecognised command
+    // string; the sport request is fire-and-forget with no acknowledgement read back.
+    // Kept so this becomes real protection if executeCmd ever waits on
+    // /api/sport/response.
+    res->success = false;
+    res->message = "Unpause aborted, could not enter balance_stand: " + cmd_message;
+    RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(vel_mutex_);
+    paused_ = false;
+    staleAllInputsLocked();
+  }
+
+  res->success = true;
+  res->message = "Unpaused: nav2 owns motion, teleop ignored";
+  RCLCPP_INFO(get_logger(), "Unpaused: nav2 owns motion, teleop ignored");
 }
 
 void QuadrupedController::quadrupedPoseCallback(
   const tmms_msgs::srv::PoseTrigger::Request::SharedPtr req,
   tmms_msgs::srv::PoseTrigger::Response::SharedPtr res)
 {
+  if (rejectUnlessPaused(res->message)) {
+    res->success = false;
+    return;
+  }
   if (req->activate) {
     {
       std::lock_guard<std::mutex> lock(vel_mutex_);
@@ -459,6 +650,10 @@ void QuadrupedController::quadrupedHeightCallback(
   const tmms_msgs::srv::FloatTrigger::Request::SharedPtr req,
   tmms_msgs::srv::FloatTrigger::Response::SharedPtr res)
 {
+  if (rejectUnlessPaused(res->message)) {
+    res->success = false;
+    return;
+  }
   publishBodyHeight(static_cast<float>(req->data));
   res->success = true;
   res->message = "Body height set to " + std::to_string(req->data) + " m";

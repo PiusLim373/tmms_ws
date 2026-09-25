@@ -7,8 +7,8 @@ Normally you do NOT launch this by hand. mapping_utils' mapping_manager_node own
     ros2 service call /mapping_manager/stop_mapping  std_srvs/srv/Trigger
 
 which is also what the UI's Mapping Tool widget calls. It is kept out of operation.launch.py
-on purpose: mapping is occasional, and map_downsampler_node voxelising /Laser_map at 1 Hz is
-real CPU to burn the rest of the time.
+on purpose: mapping is occasional, and running a full LIO stack the rest of the time is real
+CPU to burn.
 
 Headless by design -- no RViz. Monitor the run in Lichtblick on /converted_rslidar_points,
 /Odometry, /path and /cloud_registered.
@@ -20,9 +20,15 @@ two in). map_downsampler voxelises it to /downsampled_fastlio_map, whose point c
 once an area has been covered. Leaving /Laser_map subscribed in Lichtblick defeats this
 entirely, so remove it from the panel.
 
+map_downsampler_node itself runs from operation.launch.py, not from here -- its ~/load_pcd
+service also serves saved .pcd files during navigation, when this launch is not running. So
+/downsampled_fastlio_map appears as soon as this launch starts producing /Laser_map, with no
+argument to enable it.
+
 Standalone, if you do need it (defaults are correct for the live system):
 
-    ros2 launch tmms_master fast_lio.launch.py map_file_path:=/home/htxgrrt/.htxgrrt/maps/foo.pcd
+    ros2 launch tmms_master fast_lio.launch.py \\
+        map_file_path:=/home/htxgrrt/.htxgrrt/maps/pcd/foo.pcd
 
 TF: this launch publishes NOTHING but FAST-LIO's own dynamic camera_init -> body. The tree is
 rooted at odom and looks like this:
@@ -90,7 +96,6 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -99,7 +104,6 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     share = get_package_share_directory('tmms_master')
     default_config_file = os.path.join(share, 'config', 'fast_lio_converted_rslidar.yaml')
-    default_downsampler_config = os.path.join(share, 'config', 'map_downsampler.yaml')
 
     args = [
         # False for the real system. The B2 and the lidar share the wall clock.
@@ -114,15 +118,10 @@ def generate_launch_description():
         DeclareLaunchArgument('input_best_effort', default_value='true'),
         DeclareLaunchArgument('config_file', default_value=default_config_file),
         # Where /map_save writes. Overrides the yaml's value; mapping_manager passes a
-        # per-session <maps_dir>/<map_name>.pcd here. Must be absolute, and the directory
+        # per-session <maps_dir>/pcd/<map_name>.pcd here. Must be absolute, and the directory
         # must already exist -- save_to_pcd() will not create it.
         DeclareLaunchArgument('map_file_path',
-                              default_value='/home/htxgrrt/.htxgrrt/maps/rslidar_map.pcd'),
-        # The downsampled map is what Lichtblick should subscribe to; /Laser_map itself is
-        # far too large for rosbridge. Set false if you are not viewing the map live.
-        DeclareLaunchArgument('enable_map_downsampler', default_value='true'),
-        DeclareLaunchArgument('map_downsampler_config_file',
-                              default_value=default_downsampler_config),
+                              default_value='/home/htxgrrt/.htxgrrt/maps/pcd/rslidar_map.pcd'),
     ]
 
     # A bare LaunchConfiguration is a string; wrap non-string types in ParameterValue or
@@ -176,20 +175,9 @@ def generate_launch_description():
     # No static transforms here by design -- mapping_manager_node latches the one that
     # matters (odom -> camera_init) from a live odom -> dog_imu_link lookup at session start.
     # See the TF section of the docstring above.
+    #
+    # map_downsampler_node is NOT here either: it moved to operation.launch.py, because its
+    # ~/load_pcd service has to be reachable during navigation, when this launch is not
+    # running. It is a pure subscriber, so it costs nothing while /Laser_map does not exist.
 
-    # Voxel-downsamples /Laser_map onto /downsampled_fastlio_map so the accumulated map can
-    # actually be streamed to Lichtblick. Cannot affect /map_save: that writes FAST-LIO's own
-    # pcl_wait_pub buffer, which a separate subscriber has no access to.
-    map_downsampler = Node(
-        package='mapping_utils',
-        executable='map_downsampler_node',
-        name='map_downsampler',
-        output='screen',
-        condition=IfCondition(LaunchConfiguration('enable_map_downsampler')),
-        parameters=[
-            LaunchConfiguration('map_downsampler_config_file'),
-            {'use_sim_time': use_sim_time},
-        ],
-    )
-
-    return LaunchDescription(args + [converter, fast_lio, map_downsampler])
+    return LaunchDescription(args + [converter, fast_lio])

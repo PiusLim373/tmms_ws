@@ -10,4 +10,9 @@ services:
       # RecordingsPage.jsx), so each page gets its own layout regardless of
       # what's cached in the browser's IndexedDB layout storage.
       - /home/unitree/.htxgrrt/bin/tmms_lichtblick/mapping_layout.json:/src/layouts/mapping_layout.json:ro
+      # Swapped in when the Mapping page is on the "Manage 2D Maps" tab -- the flattening view
+      # the tuning sliders drive. Mounts are fixed when the container is created, so adding one
+      # needs `docker compose up -d --force-recreate`, not a restart.
+      - /home/unitree/.htxgrrt/bin/tmms_lichtblick/mapping_editor_layout.json:/src/layouts/mapping_editor_layout.json:ro
       - /home/unitree/.htxgrrt/bin/tmms_lichtblick/recording_layout.json:/src/layouts/recording_layout.json:ro
+      - /home/unitree/.htxgrrt/bin/tmms_lichtblick/navigation_layout.json:/src/layouts/navigation_layout.json:ro

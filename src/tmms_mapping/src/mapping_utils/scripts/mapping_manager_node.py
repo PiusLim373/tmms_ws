@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Owns the lifecycle of a FAST-LIO2 mapping session.
 
-fast_lio.launch.py is deliberately NOT part of operation.launch.py: mapping is occasional,
-and map_downsampler_node voxelising /Laser_map at 1 Hz is real CPU to burn for the majority
-of the time nobody is mapping. This node starts that launch on demand instead, one session
-at a time, and tears it down again on request.
+fast_lio.launch.py is deliberately NOT part of operation.launch.py: mapping is occasional, and
+running a full LIO stack the rest of the time is real CPU to burn. This node starts that launch
+on demand instead, one session at a time, and tears it down again on request.
 
     ros2 service call /mapping_manager/start_mapping tmms_msgs/srv/StringTrigger "{data: my_map}"
     ros2 service call /mapping_manager/stop_mapping  std_srvs/srv/Trigger
 
-start_mapping spawns `ros2 launch tmms_master fast_lio.launch.py map_file_path:=<maps_dir>/<name>.pcd`.
+start_mapping spawns
+`ros2 launch tmms_master fast_lio.launch.py map_file_path:=<maps_dir>/pcd/<name>.pcd`.
 The path has to be passed at spawn time, not set afterwards: laserMapping.cpp reads
 map_file_path into a global once in its constructor and never looks at it again, so
 `ros2 param set` on a running node silently does nothing. A launch-time override is already
@@ -19,6 +19,21 @@ stop_mapping calls FAST-LIO's /map_save (which blocks until the .pcd is on disk)
 it, and only then SIGINTs the launch. If the save fails the launch is still torn down and the
 failure is reported -- the map is already lost either way, and leaving a session the operator
 cannot stop is strictly worse.
+
+THE MAP STORE
+-------------
+maps_dir is the ROOT; every subfolder is derived from it, so there is exactly one path to
+configure and the two halves of a map can never drift apart:
+
+    <maps_dir>/pcd/<name>.pcd     3D cloud, written by FAST-LIO's /map_save -- this node
+    <maps_dir>/png/<name>.png     2D grid, written by the UI's map editor, not from ROS
+    <maps_dir>/png/<name>.yaml    its metadata, likewise
+
+This node owns only the pcd/ half. The 2D map used to be written from here through nav2's
+map_saver, but a flattened lidar map always needs hand cleanup before it is fit to navigate
+on -- people who walked through the scan, doorways the beam clipped through -- so saving it
+now happens at the end of an editing session in the browser, and ui_backend.js writes both
+files directly. Nothing here is involved.
 
 ANCHORING camera_init
 ---------------------
@@ -80,8 +95,10 @@ class MappingManagerNode(Node):
         self.declare_parameter('imu_frame', 'dog_imu_link')
         self.declare_parameter('child_frame', 'camera_init')
         self.declare_parameter('tf_lookup_timeout_sec', 5.0)
-        self.declare_parameter('map_save_timeout_sec', 120.0)
-        self.declare_parameter('shutdown_timeout_sec', 20.0)
+        # Widened for large maps -- too short a timeout here made the map look lost when it was
+        # really still writing (see stopMapping's matching timeout in rosbridge.js).
+        self.declare_parameter('map_save_timeout_sec', 600.0)
+        self.declare_parameter('shutdown_timeout_sec', 60.0)
 
         # Session state. Everything that touches it holds _lock.
         self._lock = threading.Lock()
@@ -131,7 +148,7 @@ class MappingManagerNode(Node):
         self.create_timer(1.0, self._reap, callback_group=self._aux_group)
 
         self.get_logger().info(
-            f"mapping_manager ready; maps_dir={self.get_parameter('maps_dir').value}")
+            f'mapping_manager ready; pcd_dir={self._pcd_dir()}')
 
     # -- helpers ---------------------------------------------------------------
 
@@ -140,6 +157,13 @@ class MappingManagerNode(Node):
 
     def _param(self, name):
         return self.get_parameter(name).value
+
+    def _maps_dir(self):
+        return os.path.expanduser(self._param('maps_dir'))
+
+    def _pcd_dir(self):
+        """Where FAST-LIO writes, and where both ~/load_pcd services read from."""
+        return os.path.join(self._maps_dir(), 'pcd')
 
     def _reap(self):
         # Never block the timer behind a long stop_mapping.
@@ -250,17 +274,17 @@ class MappingManagerNode(Node):
                 response.message = f'a mapping session is already active ({self._map_name})'
                 return response
 
-            maps_dir = os.path.expanduser(self._param('maps_dir'))
-            pcd_path = os.path.join(maps_dir, f'{name}.pcd')
+            pcd_dir = self._pcd_dir()
+            pcd_path = os.path.join(pcd_dir, f'{name}.pcd')
 
             # FAST-LIO's save_to_pcd() hands the path straight to pcl::PCDWriter and does not
-            # create the directory, so a missing maps_dir would only surface as a failed save
+            # create the directory, so a missing pcd_dir would only surface as a failed save
             # at the very end of the session.
             try:
-                os.makedirs(maps_dir, exist_ok=True)
+                os.makedirs(pcd_dir, exist_ok=True)
             except OSError as exc:
                 response.success = False
-                response.message = f'could not create {maps_dir}: {exc}'
+                response.message = f'could not create {pcd_dir}: {exc}'
                 return response
 
             parent = self._param('parent_frame')

@@ -24,6 +24,7 @@ TOPICS = [
     '/tf',
     '/tf_static',
     '/joint_states',
+    '/rosout'
     
     # '/rslidar_points',
     # '/camera_front/color/image_raw',

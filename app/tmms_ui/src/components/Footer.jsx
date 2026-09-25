@@ -55,6 +55,17 @@ export function Footer({ connected, page, onNavigate }) {
         >
           🗺️ Mapping
         </button>
+        <button
+          onClick={() => onNavigate('navigation')}
+          className="btn-icon"
+          style={{
+            padding: '8px 16px',
+            fontSize: 12,
+            ...(page === 'navigation' && { borderColor: 'var(--accent-bright)' }),
+          }}
+        >
+          🧭 Navigation
+        </button>
       </div>
 
       {/* Center: ESTOP */}
