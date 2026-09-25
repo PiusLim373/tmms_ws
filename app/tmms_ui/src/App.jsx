@@ -12,6 +12,7 @@ import { ResizeHandle } from './components/ui/ResizeHandle'
 import { RecordingsPage } from './components/RecordingsPage'
 import { MappingPage } from './components/MappingPage'
 import { NavigationPage } from './components/NavigationPage'
+import { C2Page } from './components/C2Page'
 
 export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
@@ -160,6 +161,8 @@ export default function App() {
         {page === 'mapping' && <MappingPage isPaused={isPaused} />}
 
         {page === 'navigation' && <NavigationPage onNavigate={setPage} status={status} />}
+
+        {page === 'c2' && <C2Page />}
       </div>
 
       {/* ── Footer (40px) ── */}
