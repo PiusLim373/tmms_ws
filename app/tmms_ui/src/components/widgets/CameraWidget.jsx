@@ -2,10 +2,18 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import { subscribeCamera } from '../../services/rosbridge'
 import { useCameraView } from '../../hooks/useCameraView'
 
+// `data` is raw JPEG/PNG bytes when the frame arrived cbor-raw (subscribeCamera's path for
+// every /compressed topic), or a base64 string from rosbridge's JSON encoding. Both are kept.
 function decodeCompressedImage(msg, canvas, onSize) {
-  const { data: b64, format } = msg
-  if (!b64) return
+  const { data, format } = msg
+  if (!data || !data.length) return
   const mimeType = format && format.includes('png') ? 'image/png' : 'image/jpeg'
+  const isBytes = typeof data !== 'string'
+  const src = isBytes
+    ? URL.createObjectURL(new Blob([data], { type: mimeType }))
+    : `data:${mimeType};base64,${data}`
+  // A blob URL pins its bytes until revoked; at 20 fps that leaks quickly otherwise.
+  const release = () => { if (isBytes) URL.revokeObjectURL(src) }
   const img = new window.Image()
   img.onload = () => {
     if (canvas.width !== img.width || canvas.height !== img.height) {
@@ -14,8 +22,10 @@ function decodeCompressedImage(msg, canvas, onSize) {
       onSize(img.width, img.height)
     }
     canvas.getContext('2d').drawImage(img, 0, 0)
+    release()
   }
-  img.src = `data:${mimeType};base64,${b64}`
+  img.onerror = release
+  img.src = src
 }
 
 function decodeRosImage(msg, canvas, onSize) {

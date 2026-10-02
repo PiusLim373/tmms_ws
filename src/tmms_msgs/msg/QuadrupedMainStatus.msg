@@ -1,3 +1,6 @@
+# Mirrors /amcl_pose, so this is the MAP frame and is planar (z and roll/pitch are 0).
+# Reads as the map origin until amcl first publishes. Bags recorded before 2026-09 carry
+# the B2's own odom pose in this field instead.
 geometry_msgs/Pose pose
 int32 battery_percentage
 string robot_mode
@@ -5,6 +8,9 @@ string navigation_state
 bool is_paused
 string localization_status
 string current_map
+# Mirrors /curr_navplan. 0 means no plan -- ids are epoch ms, so never 0.
+int64 current_navplan_id
+string current_navplan_status
 
 # Enum navigation_state
 string IDLE=idle

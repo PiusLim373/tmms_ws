@@ -42,6 +42,7 @@ ALLOWED_STATES = frozenset({
     QuadrupedMainStatus.UNLOCALIZED,
     QuadrupedMainStatus.IDLE,
     QuadrupedMainStatus.CANCELED,
+    QuadrupedMainStatus.NAVIGATION_FAILED,
     QuadrupedMainStatus.PAUSED,
     QuadrupedMainStatus.ERROR,
 })

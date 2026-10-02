@@ -15,3 +15,5 @@ services:
     volumes:
       # Requires: export TMMS_WS_PATH=/abs/path/to/tmms_ws
       - ${TMMS_WS_PATH:?set TMMS_WS_PATH to the absolute path of your tmms_ws checkout, e.g. export TMMS_WS_PATH=/abs/path/to/tmms_ws}:/home/htxgrrt/.htxgrrt/bin/tmms_ws
+      - /home/piuslim373/.htxgrrt/maps:/home/htxgrrt/.htxgrrt/maps               # maps binding
+      - /home/piuslim373/.htxgrrt/certs:/home/htxgrrt/.htxgrrt/certs:ro          # certs binding

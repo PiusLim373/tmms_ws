@@ -24,6 +24,14 @@ goes stale, which cancels any active goal and refuses new ones until the flag cl
 localization_lost it clears itself, so the normal case needs no operator action. UNLOCALIZED
 is exempt -- ERROR exits to IDLE, which is only safe past the localization gate.
 
+Two ways in to NAVIGATING. A bare /lichtblick_navgoal is one pose and preempts whatever is
+running. A navplan arrives on /execute_navplan from navplan_processor, is a list of poses
+driven with goThroughPoses, and is REFUSED unless the FSM is already waiting -- so it never
+preempts. Its progress is reported on /curr_navplan as accepted / executing / completed /
+cancelled / errored. This node is the topic's only writer, and only for plans it admitted: a
+refused plan is answered on the service alone, so it can never overwrite a running plan in
+quadruped_main_status's mirror.
+
 A goal arriving during NAVIGATING preempts the running one without leaving the state. One
 sequencing contract falls out of that: after /cancel_goal, the caller MUST wait for
 /yasmin_state to read CANCELED before publishing the next goal. A goal that lands while the
@@ -57,7 +65,8 @@ from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from std_msgs.msg import String
 from std_srvs.srv import Empty
-from tmms_msgs.msg import QuadrupedMainStatus
+from tmms_msgs.msg import NavigationPlan, QuadrupedMainStatus
+from tmms_msgs.srv import NavigationPlanTrigger
 from yasmin import Blackboard, State, StateMachine
 from yasmin_ros import set_ros_loggers
 from yasmin_ros.yasmin_node import YasminNode
@@ -74,6 +83,15 @@ NAV_SERVER_WAIT_SEC = 3.0
 LATCHED = QoSProfile(depth=1,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      history=HistoryPolicy.KEEP_LAST)
+
+# States in which a navplan may be dispatched. Must agree with navplan_processor's own
+# ACCEPTING_STATES; this one is authoritative because it reads the FSM directly rather than
+# quadruped_controller's 200 ms mirror.
+NAVPLAN_ACCEPTING_STATES = frozenset({
+    QuadrupedMainStatus.IDLE,
+    QuadrupedMainStatus.CANCELED,
+    QuadrupedMainStatus.NAVIGATION_FAILED,
+})
 
 
 class NavContext:
@@ -94,6 +112,13 @@ class NavContext:
         self._cancel_requested = False
         # Non-empty is the fault, and the string is the reason. Empty means healthy.
         self._system_error = ''
+        # Navplans get their own slot rather than sharing _pending_goal: a navgoal preempts a
+        # running goal, a navplan is refused unless the robot is already waiting, so the two
+        # are consumed in different places and must not overwrite each other.
+        self._pending_navplan = None
+        self._active_navplan = None
+        # What publish_state last published. The FSM thread is the only writer.
+        self._state = ''
         # Lets a blocked state wake immediately on a new goal instead of waiting out its tick.
         self._wake = threading.Event()
 
@@ -111,6 +136,11 @@ class NavContext:
         self.node.create_subscription(
             String, '/system_error', self._system_error_cb, LATCHED)
         self.node.create_service(Empty, '/cancel_goal', self._cancel_goal_cb)
+        # navplan_processor forwards validated plans here. Volatile, matching
+        # quadruped_controller's subscription.
+        self._navplan_pub = self.node.create_publisher(NavigationPlan, '/curr_navplan', 10)
+        self.node.create_service(
+            NavigationPlanTrigger, '/execute_navplan', self._execute_navplan_cb)
 
     # -- callbacks: flags only, never a navigator call -------------------------
 
@@ -137,9 +167,54 @@ class NavContext:
         yasmin.YASMIN_LOG_INFO('/cancel_goal requested')
         return response
 
+    def _execute_navplan_cb(self, request, response):
+        """Admission control only -- stash and return; the FSM thread does the driving.
+
+        Rejecting rather than holding is deliberate. A plan parked until the state came good
+        would fire on its own once localization returned, which is the behaviour
+        clear_pending_goal() exists to prevent.
+        """
+        plan = request.navigation_plan
+        with self._lock:
+            state = self._state
+            if not plan.waypoints:
+                reason = 'plan has no waypoints'
+            elif state not in NAVPLAN_ACCEPTING_STATES:
+                reason = f"robot is '{state}'; cancel the current goal first"
+            elif self._pending_navplan is not None:
+                # The slot holds one. Dispatch normally empties it within a tick, but it
+                # blocks for NAV_SERVER_WAIT_SEC when nav2 is down -- long enough for a
+                # second plan to land and silently replace the first.
+                reason = (f'navplan {self._pending_navplan.navplan_id} is still waiting to '
+                          f'be dispatched')
+            elif self._active_navplan is not None:
+                # Taken from the slot but the FSM has not published `navigating` yet, so the
+                # state check above still passes.
+                reason = f'navplan {self._active_navplan.navplan_id} is already in progress'
+            else:
+                reason = None
+                # Published before the slot is filled, so the FSM cannot dispatch it and
+                # publish `executing` ahead of this.
+                plan.status = NavigationPlan.ACCEPTED
+                self._navplan_pub.publish(plan)
+                self._pending_navplan = plan
+        self._wake.set()
+
+        response.success = reason is None
+        if reason is None:
+            response.message = f'navplan {plan.navplan_id} queued for dispatch'
+            yasmin.YASMIN_LOG_INFO(response.message)
+        else:
+            response.message = reason
+            yasmin.YASMIN_LOG_WARN(f'navplan {plan.navplan_id} refused: {reason}')
+        return response
+
     # -- FSM-thread helpers ----------------------------------------------------
 
     def publish_state(self, name):
+        # Cached so /execute_navplan can gate on it. Single writer, this thread.
+        with self._lock:
+            self._state = name
         self._state_pub.publish(String(data=name))
         yasmin.YASMIN_LOG_INFO(f'yasmin_state -> {name}')
 
@@ -170,6 +245,40 @@ class NavContext:
     def clear_pending_goal(self):
         with self._lock:
             self._pending_goal = None
+            plan, self._pending_navplan = self._pending_navplan, None
+        if plan is not None:
+            # Already published as accepted; dropping it silently would leave that standing.
+            plan.status = NavigationPlan.ERRORED
+            self._navplan_pub.publish(plan)
+            yasmin.YASMIN_LOG_WARN(f'navplan {plan.navplan_id} dropped before dispatch -> errored')
+
+    def take_navplan(self):
+        """Pop the pending navplan, if any, and mark it active. Take-once, same as take_goal().
+
+        Active from here rather than from dispatch, so /execute_navplan refuses a second plan
+        while this one is still being handed to nav2.
+        """
+        with self._lock:
+            plan, self._pending_navplan = self._pending_navplan, None
+            if plan is not None:
+                self._active_navplan = plan
+            return plan
+
+    def publish_navplan_status(self, status):
+        """Republish the active plan under a new status. No-op when none is active."""
+        with self._lock:
+            plan = self._active_navplan
+            if plan is None:
+                return
+            plan.status = status
+            if status not in (NavigationPlan.EXECUTING,):
+                self._active_navplan = None
+        self._navplan_pub.publish(plan)
+        yasmin.YASMIN_LOG_INFO(f'navplan {plan.navplan_id} -> {status}')
+
+    def has_active_navplan(self):
+        with self._lock:
+            return self._active_navplan is not None
 
     def cancel_requested(self):
         with self._lock:
@@ -195,6 +304,9 @@ class UnlocalizedState(State):
             'again whenever localization is lost.')
 
     def execute(self, blackboard: Blackboard) -> str:
+        # A navplan admitted just before localization was lost will never run; report it now
+        # rather than on the next IDLE entry.
+        self.ctx.clear_pending_goal()
         self.ctx.publish_state(QuadrupedMainStatus.UNLOCALIZED)
         while rclpy.ok() and not self.is_canceled():
             if self.ctx.is_localized():
@@ -220,11 +332,13 @@ class WaitForGoalState(State):
             'to ERROR on /system_error.')
 
     def execute(self, blackboard: Blackboard) -> str:
-        self.ctx.publish_state(self.state_name)
         # NAVIGATING now consumes goals itself, so what is left here arrived during
         # cancellation or while UNLOCALIZED. Both are stale; dropping them is what keeps
         # the robot from silently starting a second navigation on entry.
+        # Cleared BEFORE the state is published: every state entering here refuses navplans,
+        # so none can be admitted until then, and none admitted after it gets wiped here.
         self.ctx.clear_pending_goal()
+        self.ctx.publish_state(self.state_name)
 
         while rclpy.ok() and not self.is_canceled():
             if self.ctx.localization_lost():
@@ -237,6 +351,12 @@ class WaitForGoalState(State):
             if reason:
                 yasmin.YASMIN_LOG_ERROR(f'System error while waiting for a goal: {reason}')
                 return 'system_error'
+
+            # Navplans are only ever dispatched from here -- /execute_navplan refuses one
+            # unless the FSM is already in a waiting state, so NAVIGATING never sees one.
+            plan = self.ctx.take_navplan()
+            if plan is not None and self._dispatch_navplan(plan):
+                return 'goal_accepted'
 
             goal = self.ctx.take_goal()
             if goal is None:
@@ -257,6 +377,40 @@ class WaitForGoalState(State):
             yasmin.YASMIN_LOG_WARN('nav2 rejected the goal; still waiting')
 
         return 'localization_lost'
+
+    def _dispatch_navplan(self, plan):
+        """Send a validated navplan to nav2. Returns True if it was accepted.
+
+        Always goThroughPoses, even for one waypoint, so there is a single path to reason
+        about. The waypoints carry no frame of their own -- NavigationPlan.msg is a bare
+        Pose[] -- and the whole system works in map.
+        """
+        if not self.ctx.nav_server_ready():
+            yasmin.YASMIN_LOG_ERROR(
+                'NavigateThroughPoses action server unavailable; dropping navplan')
+            self.ctx.publish_navplan_status(NavigationPlan.ERRORED)
+            return False
+
+        stamp = self.ctx.node.get_clock().now().to_msg()
+        poses = []
+        for wp in plan.waypoints:
+            ps = PoseStamped()
+            ps.header.frame_id = 'map'
+            ps.header.stamp = stamp
+            ps.pose = wp
+            poses.append(ps)
+
+        # Same trap as goToPose: goal_handle is overwritten before `accepted` is checked, so
+        # a rejection must put the old one back or a later cancel stops the wrong handle.
+        prev_handle = self.ctx.navigator.goal_handle
+        if not self.ctx.navigator.goThroughPoses(poses):
+            self.ctx.navigator.goal_handle = prev_handle
+            yasmin.YASMIN_LOG_WARN('nav2 rejected the navplan; still waiting')
+            self.ctx.publish_navplan_status(NavigationPlan.REJECTED)
+            return False
+
+        self.ctx.publish_navplan_status(NavigationPlan.EXECUTING)
+        return True
 
 
 class SystemErrorState(State):
@@ -345,6 +499,9 @@ class NavigatingState(State):
                     prev_handle = self.ctx.navigator.goal_handle
                     if self.ctx.navigator.goToPose(new_goal):
                         yasmin.YASMIN_LOG_INFO('New goal preempted the active one')
+                        # A bare navgoal that preempts a navplan abandons it. Report that
+                        # now, or the plan would sit at "executing" forever.
+                        self.ctx.publish_navplan_status(NavigationPlan.CANCELLED)
                     else:
                         self.ctx.navigator.goal_handle = prev_handle
                         yasmin.YASMIN_LOG_WARN(
@@ -360,20 +517,26 @@ class NavigatingState(State):
 
         if cancel_reason == 'localization_lost':
             yasmin.YASMIN_LOG_WARN('Localization lost mid-goal; goal cancelled')
+            self.ctx.publish_navplan_status(NavigationPlan.ERRORED)
             return 'localization_lost'
         if cancel_reason == 'system_error':
             yasmin.YASMIN_LOG_ERROR(f'System error mid-goal; goal cancelled: {error_text}')
+            self.ctx.publish_navplan_status(NavigationPlan.ERRORED)
             return 'system_error'
         if cancel_reason == 'goal_rejected':
+            self.ctx.publish_navplan_status(NavigationPlan.ERRORED)
             return 'aborted'
         if result == TaskResult.SUCCEEDED:
             yasmin.YASMIN_LOG_INFO('Goal reached')
+            self.ctx.publish_navplan_status(NavigationPlan.COMPLETED)
             return 'succeeded'
         if result == TaskResult.CANCELED:
             yasmin.YASMIN_LOG_INFO('Goal canceled')
+            self.ctx.publish_navplan_status(NavigationPlan.CANCELLED)
             return 'canceled'
         # FAILED and UNKNOWN both mean "did not get there and was not cancelled".
         yasmin.YASMIN_LOG_WARN(f'Goal did not complete: {result}')
+        self.ctx.publish_navplan_status(NavigationPlan.ERRORED)
         return 'aborted'
 
 

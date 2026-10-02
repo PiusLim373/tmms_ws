@@ -66,7 +66,7 @@ export function Footer({ connected, page, onNavigate }) {
         >
           🧭 Navigation
         </button>
-        <button
+        {/* <button
           onClick={() => onNavigate('c2')}
           className="btn-icon"
           style={{
@@ -76,7 +76,7 @@ export function Footer({ connected, page, onNavigate }) {
           }}
         >
           📍 C2
-        </button>
+        </button> */}
       </div>
 
       {/* Center: ESTOP */}

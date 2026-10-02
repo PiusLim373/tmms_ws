@@ -106,9 +106,13 @@ bt_navigator:
     # Resolved by ParameterFile(allow_substs=True) in navigation.launch.py; a plain path here
     # would not expand. The file ships via install(DIRECTORY launch config) in CMakeLists.
     default_nav_to_pose_bt_xml: "$(find-pkg-share tmms_master)/config/nav_to_pose_with_consistent_replanning_and_if_path_becomes_invalid.xml"
-    # 'default_nav_through_poses_bt_xml' is left at nav2's default
-    # (nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml). The tree above
-    # is a NavigateToPose tree -- it reads {goal}, not {goals} -- so it cannot serve both.
+    # The through-poses counterpart, used by navplans. A separate file because the tree above
+    # reads {goal}, not {goals}, so it cannot serve both. nav2 ships no through-poses tree
+    # with this replanning discipline -- its only one replans unconditionally at 3 Hz -- so
+    # this is a port. See the header of the file itself for why RemovePassedGoals sits where
+    # it does. To A/B against stock-minus-Spin/Wait, point this at
+    # config/navigate_through_poses_w_replanning_and_recovery.xml instead.
+    default_nav_through_poses_bt_xml: "$(find-pkg-share tmms_master)/config/nav_through_poses_with_consistent_replanning_and_if_path_becomes_invalid.xml"
 
     # plugin_lib_names is used to add custom BT plugins to the executor (vector of strings).
     # Built-in plugins are added automatically
@@ -144,6 +148,11 @@ controller_server:
       yaw_goal_tolerance: 0.25
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
+      # Look-ahead window, cut by straight-line distance; 1.0 keeps a path that loops back
+      # from leaking into it. prune_distance must not exceed it, or once the robot is that far
+      # from the plan start DWB throws "Resulting plan has 0 poses in it".
+      forward_prune_distance: 1.0
+      prune_distance: 1.0
       debug_trajectory_details: False
       min_vel_x: 0.0      # set to -0.2 for robot to reverse, but lidar is block, so not advisable
       min_vel_y: -0.3

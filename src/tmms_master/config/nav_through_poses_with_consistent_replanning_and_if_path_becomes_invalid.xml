@@ -1,0 +1,62 @@
+<!--
+  The through-poses counterpart of nav_to_pose_with_consistent_replanning_and_if_path_becomes_invalid.xml.
+  nav2 ships no such tree -- of the trees it provides, only navigate_through_poses_w_replanning_and_recovery.xml
+  reads {goals}, and that one replans unconditionally at 3Hz. This keeps the path and replans
+  only when it has actually gone stale: a waypoint reached, a new goal, a path the planner no
+  longer considers collision-free, or 10s elapsed.
+
+  RemovePassedGoals sits OUTSIDE the replan guard, unlike the stock tree where it sits beside
+  ComputePathThroughPoses. Inside, a tick that decided not to replan would skip pruning too,
+  and the next replan would route the robot back through waypoints it had already passed.
+
+  Outside, it also supplies the per-waypoint replan for free: it writes output_goals="{goals}",
+  so pruning mutates the blackboard, GlobalUpdatedGoal sees {goals} change, the guard fails,
+  and exactly one replan fires per waypoint reached.
+
+  Spin and Wait are omitted from the recovery RoundRobin -- neither makes sense for a
+  quadruped.
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+        <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+        <RateController hz="2.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
+            <Sequence>
+              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
+              <Fallback>
+                <ReactiveSequence>
+                  <Inverter>
+                    <PathExpiringTimer seconds="10" path="{path}"/>
+                  </Inverter>
+                  <Inverter>
+                    <GlobalUpdatedGoal/>
+                  </Inverter>
+                  <IsPathValid path="{path}"/>
+                </ReactiveSequence>
+                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+              </Fallback>
+            </Sequence>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+          <BackUp backup_dist="0.30" backup_speed="0.15"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

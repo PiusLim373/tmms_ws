@@ -8,6 +8,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "sensor_msgs/msg/joy.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "nav_msgs/msg/odometry.hpp"
@@ -20,6 +21,7 @@
 #include "tmms_msgs/srv/pose_trigger.hpp"
 #include "tmms_msgs/srv/float_trigger.hpp"
 #include "tmms_msgs/msg/quadruped_main_status.hpp"
+#include "tmms_msgs/msg/navigation_plan.hpp"
 #include "tf2_ros/transform_broadcaster.h"
 
 #include "ros2_sport_client.h"
@@ -38,6 +40,8 @@ private:
   void yasminStateCallback(const std_msgs::msg::String::SharedPtr msg);
   void localizationStatusCallback(const std_msgs::msg::String::SharedPtr msg);
   void currentMapCallback(const std_msgs::msg::String::SharedPtr msg);
+  void currNavplanCallback(const tmms_msgs::msg::NavigationPlan::SharedPtr msg);
+  void amclPoseCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
   void sportStateCallback(const unitree_go::msg::SportModeState::SharedPtr msg);
   void lowStateCallback(const unitree_go::msg::LowState::SharedPtr msg);
   void dogOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
@@ -99,6 +103,11 @@ private:
   std::string localization_status_{tmms_msgs::msg::QuadrupedMainStatus::NOT_STARTED};
   // Empty until localization_manager reports a successfully loaded map.
   std::string current_map_;
+  // Last plan seen on /curr_navplan (written by tmms_yasmin only). That topic is volatile,
+  // not latched, so starting mid-plan leaves these at their defaults until the next status
+  // change. 0 means no plan; ids are epoch ms and can never be 0.
+  int64_t current_navplan_id_{0};
+  std::string current_navplan_status_;
   ControlMode control_mode_{ControlMode::kMove};
   bool input_was_fresh_{false};
   bool prev_joy_zero_{true};
@@ -110,6 +119,9 @@ private:
 
   uint8_t mode_{0};
   uint8_t battery_soc_{0};
+  // The robot's pose IN THE MAP FRAME, mirrored from /amcl_pose. Stays default-constructed
+  // (origin, identity) until AMCL first publishes, so before localization it reads as the
+  // map origin rather than as unknown.
   geometry_msgs::msg::Pose pose_;
 
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
@@ -118,6 +130,9 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr yasmin_state_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr localization_status_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr current_map_sub_;
+  rclcpp::Subscription<tmms_msgs::msg::NavigationPlan>::SharedPtr curr_navplan_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
+    amcl_pose_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr consolidated_pub_;
   rclcpp::Subscription<unitree_go::msg::SportModeState>::SharedPtr sport_state_sub_;
   rclcpp::Subscription<unitree_go::msg::LowState>::SharedPtr low_state_sub_;

@@ -626,7 +626,10 @@ app.post('/api/system/reboot/:target', (req, res) => {
 })
 
 if (isProd) {
-  app.use(express.static(path.join(__dirname, 'dist')))
+  // `extensions` is what makes /navplan_tester resolve to dist/navplan_tester.html. There is
+  // no SPA fallback here and the dashboard does not route by URL, so without it the second
+  // Vite entry would only be reachable at its full .html path.
+  app.use(express.static(path.join(__dirname, 'dist'), { extensions: ['html'] }))
 }
 
 if (TLS_CERT && TLS_KEY) {

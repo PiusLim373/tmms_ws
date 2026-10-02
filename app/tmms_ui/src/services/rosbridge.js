@@ -1,4 +1,5 @@
 import { Ros, Topic, Service } from 'roslib'
+import { decodeCompressedImageCdr } from '../lib/rosCdr'
 
 // https pages can't open a plain ws:// socket (browsers block it as mixed
 // content), so match whatever scheme the page itself loaded over.
@@ -78,16 +79,38 @@ export function subscribe(topicName, messageType, callback) {
 }
 
 // Camera topics — bandwidth throttled
+//
+// Compressed cameras are requested cbor-raw and decoded here, so callers get
+// { header, format, data } with `data` as raw JPEG/PNG bytes rather than base64. This is
+// load-bearing, not a micro-optimisation: rosbridge shares one ROS subscription per topic
+// between every client, and the first subscriber fixes it as raw or decoded. Lichtblick asks
+// for cbor-raw on everything, so a camera shown in a live layout (the Mapping page shows
+// /topdown_cam/compressed) would otherwise go blank on whichever page opened second.
+// See lib/rosCdr.js. Uncompressed sensor_msgs/Image stays on JSON; no topic uses it today.
 export function subscribeCamera(topicName, callback) {
   const isCompressed = topicName.endsWith('/compressed')
   const topic = new Topic({
     ros,
     name: topicName,
     messageType: isCompressed ? 'sensor_msgs/CompressedImage' : 'sensor_msgs/Image',
+    ...(isCompressed && { compression: 'cbor-raw' }),
     throttle_rate: 50,   // max ~20 fps from server side
     queue_length: 1,
   })
-  topic.subscribe(callback)
+  if (!isCompressed) {
+    topic.subscribe(callback)
+    return () => topic.unsubscribe()
+  }
+  let warned = false
+  topic.subscribe((msg) => {
+    try {
+      callback(decodeCompressedImageCdr(msg.bytes))
+    } catch (err) {
+      // Once per subscription, not per frame -- at 20 fps this would bury the console.
+      if (!warned) console.error(`[rosbridge] ${topicName} decode failed:`, err)
+      warned = true
+    }
+  })
   return () => topic.unsubscribe()
 }
 

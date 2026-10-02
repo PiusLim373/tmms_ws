@@ -235,6 +235,16 @@ def generate_launch_description():
                     name='tmms_yasmin',
                     output='screen'),
 
+                # Gatekeeper in front of tmms_yasmin for multi-waypoint plans, the same way
+                # localization_manager gates nav2's localization services. Validates the
+                # incoming plan against the live robot state, then forwards it to
+                # /execute_navplan. Order-independent: its client call is bounded.
+                Node(
+                    package='navplan_processor',
+                    executable='navplan_processor_node',
+                    name='navplan_processor',
+                    output='screen'),
+
                 # Rosbag recording (cameras + quadruped status)
                 IncludeLaunchDescription(
                     PythonLaunchDescriptionSource([

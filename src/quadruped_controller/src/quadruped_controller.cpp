@@ -69,6 +69,22 @@ QuadrupedController::QuadrupedController()
     rclcpp::QoS(1).transient_local(),
     std::bind(&QuadrupedController::currentMapCallback, this, std::placeholders::_1));
 
+  // NOT latched, unlike the three above. tmms_yasmin is the only writer, and only for plans
+  // it admitted, so a refused plan never lands here. The cost is that these two fields stay
+  // at their defaults until the next status change.
+  curr_navplan_sub_ = create_subscription<tmms_msgs::msg::NavigationPlan>(
+    "/curr_navplan", 10,
+    std::bind(&QuadrupedController::currNavplanCallback, this, std::placeholders::_1));
+
+  // The pose reported in quadruped_main_status. Latched, matching amcl's own publisher
+  // (KeepLast(1) + transient_local + reliable), so a restart of this node picks up the
+  // current pose at once instead of waiting for the robot to move far enough to trigger
+  // amcl's next filter update.
+  amcl_pose_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "/amcl_pose",
+    rclcpp::QoS(1).transient_local(),
+    std::bind(&QuadrupedController::amclPoseCallback, this, std::placeholders::_1));
+
   consolidated_pub_ = create_publisher<geometry_msgs::msg::Twist>(
     "/consolidated_quadruped_cmd_vel", 10);
 
@@ -161,6 +177,28 @@ void QuadrupedController::currentMapCallback(const std_msgs::msg::String::Shared
   current_map_ = msg->data;
 }
 
+void QuadrupedController::currNavplanCallback(
+  const tmms_msgs::msg::NavigationPlan::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(vel_mutex_);
+  current_navplan_id_ = msg->navplan_id;
+  current_navplan_status_ = msg->status;
+}
+
+void QuadrupedController::amclPoseCallback(
+  const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
+{
+  // Planar by nature: amcl estimates x, y and yaw only, so z and roll/pitch are zero
+  // here. The gait's height and tilt are not lost -- they stay on the
+  // base_footprint -> base_link transform (see sportStateCallback).
+  //
+  // Updates only when amcl's filter does, i.e. every update_min_d (0.05 m) or
+  // update_min_a (0.05 rad) of motion, and not at all while the robot is stationary --
+  // which is correct, since a parked robot's pose does not change.
+  std::lock_guard<std::mutex> lock(vel_mutex_);
+  pose_ = msg->pose.pose;
+}
+
 bool QuadrupedController::isPaused()
 {
   std::lock_guard<std::mutex> lock(vel_mutex_);
@@ -240,17 +278,12 @@ void QuadrupedController::sportStateCallback(
 {
   mode_ = msg->mode;
 
-  pose_.position.x = msg->position[0];
-  pose_.position.y = msg->position[1];
-  pose_.position.z = msg->position[2];
-
-  // Unitree packs imu_state.quaternion as [w, x, y, z]; geometry_msgs/Quaternion
-  // fields are named x, y, z, w, so map explicitly rather than by array order.
-  pose_.orientation.w = msg->imu_state.quaternion[0];
-  pose_.orientation.x = msg->imu_state.quaternion[1];
-  pose_.orientation.y = msg->imu_state.quaternion[2];
-  pose_.orientation.z = msg->imu_state.quaternion[3];
-
+  // msg->position is NOT used for quadruped_main_status.pose. It is the B2's own
+  // leg/IMU dead reckoning, zeroed at power-on and expressed in the robot's internal
+  // odom frame -- it never sees AMCL, so it cannot answer "where am I on the map" and
+  // plotting it against a map's origin/resolution is only right while odom agrees with
+  // map. That field comes from /amcl_pose; see amclPoseCallback.
+  //
   // base_footprint -> base_link carries only the body's height/tilt above the
   // flat ground plane; base_footprint's own planar pose comes from /dog_odom
   // (see dogOdomCallback), so yaw is intentionally dropped here.
@@ -340,6 +373,8 @@ void QuadrupedController::mainStatusTimerCallback()
       paused_ ? tmms_msgs::msg::QuadrupedMainStatus::PAUSED : yasmin_state_;
     status.localization_status = localization_status_;
     status.current_map = current_map_;
+    status.current_navplan_id = current_navplan_id_;
+    status.current_navplan_status = current_navplan_status_;
   }
   main_status_pub_->publish(status);
 }
