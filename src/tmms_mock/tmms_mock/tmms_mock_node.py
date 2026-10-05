@@ -12,6 +12,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from sensor_msgs.msg import CompressedImage, Joy, LaserScan
 from std_srvs.srv import SetBool
 from tmms_msgs.msg import QuadrupedMainStatus
+from tmms_msgs.srv import RelocalizeTrigger
 
 # Mock camera specs: (width, height)
 _CAMERAS = [
@@ -72,6 +73,7 @@ class TmmsMockNode(Node):
             QuadrupedMainStatus, '/quadruped_main_status', 10)
         self.create_subscription(
             PoseWithCovarianceStamped, '/lichtblick_initialpose', self._initialpose_cb, 10)
+        self.create_service(RelocalizeTrigger, '/relocalize', self._relocalize_cb)
 
         # Timers
         self.create_timer(0.01, self._publish_tick)          # 100 Hz
@@ -146,6 +148,20 @@ class TmmsMockNode(Node):
         self._ranges = None
         self.get_logger().info(
             f'Mock robot moved to x={p.position.x:.2f} y={p.position.y:.2f} yaw={yaw:.2f}')
+
+    def _relocalize_cb(self, request, response):
+        # Mirrors localization_manager's /relocalize: switch map, then pose. Always converges.
+        name = request.map_name.strip()
+        loaded = self._load_map(self.get_parameter('maps_dir').value, name)
+        if loaded is None:
+            response.success = False
+            response.message = f"Relocalize rejected: map '{name}' not found"
+            return response
+        self._map, self._map_name = loaded, name
+        self._initialpose_cb(request.initial_pose)
+        response.success = True
+        response.message = f"Mock relocalized on '{name}'"
+        return response
 
     def _scan_tick(self):
         if self._map is None:

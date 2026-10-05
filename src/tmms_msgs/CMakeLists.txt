@@ -17,6 +17,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PoseTrigger.srv"
   "srv/FloatTrigger.srv"
   "srv/NavigationPlanTrigger.srv"
+  "srv/RelocalizeTrigger.srv"
   DEPENDENCIES geometry_msgs
 )
 

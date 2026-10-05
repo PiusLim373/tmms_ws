@@ -5,6 +5,12 @@ The UI never calls nav2 directly. Loading a map or dropping an initial pose whil
 is mid-navigation would swap the world out from under the controller, so both requests come
 here first, get checked against the robot's state, and are only then forwarded.
 
+Two ways in. /relocalize is the closed-loop one: map name and pose in one call, answered
+only once the attempt has converged or failed. /map_load followed by a pose on the
+/lichtblick_initialpose topic is the older two-step path, kept for Lichtblick's Navigation
+tab; its outcome is only visible on localization_status. Both share the same steps, and only
+one map load or localization attempt runs at a time.
+
 This node owns exactly one piece of published truth -- `localization_status` -- which the UI
 renders directly and quadruped_controller mirrors into QuadrupedMainStatus.
 
@@ -23,14 +29,14 @@ import threading
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav2_msgs.srv import LoadMap
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from std_msgs.msg import String
 from std_srvs.srv import Empty
 from tmms_msgs.msg import QuadrupedMainStatus
-from tmms_msgs.srv import StringTrigger
+from tmms_msgs.srv import RelocalizeTrigger, StringTrigger
 
 # Loading a map or re-seeding the pose is only safe when the robot is not actively driving
 # itself somewhere, which is NAVIGATING alone.
@@ -86,15 +92,16 @@ class LocalizationManagerNode(Node):
         self._confidence = 0.0
         self._have_amcl_pose = False
         self._low_count = 0
-        # Empty until a map has been through /map_load AND nav2 returned RESULT_SUCCESS.
+        # Empty until a map has been loaded AND nav2 returned RESULT_SUCCESS.
         # That is also what gates the initial-pose flow.
         self._current_map = ''
+        # True while a map load or a localization attempt runs, whichever entry point started
+        # it. Claimed atomically by _claim(), so two can never interleave.
+        self._busy = False
 
-        # /map_load is mutually exclusive so two loads can never interleave. Everything
-        # else is reentrant: the initialpose flow blocks for ~3s inside its own callback,
-        # and both the service responses it waits on and the /amcl_pose updates that make
-        # its final confidence check meaningful have to keep being delivered underneath it.
-        self._srv_group = MutuallyExclusiveCallbackGroup()
+        # All reentrant: the pose flow blocks for seconds inside its own callback, and the
+        # service responses and /amcl_pose updates it waits on have to keep being delivered
+        # underneath it. A second request is refused by _busy rather than queued.
         self._aux_group = ReentrantCallbackGroup()
 
         # TRANSIENT_LOCAL so a UI (or quadruped_controller) that connects after us still
@@ -137,7 +144,10 @@ class LocalizationManagerNode(Node):
             StringTrigger, '/map_downsampler/load_pcd', callback_group=self._aux_group)
 
         self.create_service(
-            StringTrigger, '/map_load', self._map_load_cb, callback_group=self._srv_group)
+            StringTrigger, '/map_load', self._map_load_cb, callback_group=self._aux_group)
+        self.create_service(
+            RelocalizeTrigger, '/relocalize', self._relocalize_cb,
+            callback_group=self._aux_group)
 
         self._publish_status(QuadrupedMainStatus.NOT_STARTED)
         self._publish_current_map('')
@@ -226,6 +236,51 @@ class LocalizationManagerNode(Node):
             return f"robot is '{nav_state}'; allowed: {', '.join(sorted(ALLOWED_STATES))}"
         return None
 
+    def _claim(self):
+        """Take the single map-load / localization slot. False if something already holds it."""
+        with self._state_lock:
+            if self._busy:
+                return False
+            self._busy = True
+            return True
+
+    def _release(self):
+        with self._state_lock:
+            self._busy = False
+
+    def _check_map_name(self, name):
+        """Returns a reason string if `name` cannot be loaded, else None.
+
+        A BARE NAME, never a path -- MAP_NAME_RE is then the only thing that has to be right
+        for path traversal to be impossible, and the extensions are appended here.
+        """
+        if not MAP_NAME_RE.match(name):
+            return f"'{name}' is not a valid map name (letters, digits and underscore only)"
+        yaml_path = self._yaml_path(name)
+        if not os.path.isfile(yaml_path):
+            return f'{yaml_path} does not exist'
+        return None
+
+    def _check_pose(self, msg):
+        """Returns a reason string if AMCL would not take this pose, else None."""
+        global_frame = str(self._param('global_frame'))
+        if msg.header.frame_id.lstrip('/') != global_frame:
+            # AMCL drops a mismatched frame with only a warning of its own, so without this
+            # the pose would vanish and the run would fail with no visible cause.
+            return (f"initial pose is in frame '{msg.header.frame_id}', AMCL only accepts "
+                    f"'{global_frame}'")
+        return None
+
+    def _reply(self, response, ok, message):
+        response.success = ok
+        response.message = message
+        # Two call sites on purpose: rclpy raises if one call site changes severity.
+        if ok:
+            self.get_logger().info(message)
+        else:
+            self.get_logger().error(message)
+        return response
+
     def _confidence_from(self, covariance):
         """Map AMCL's covariance onto 0..1. See the module docstring for why only 3 entries."""
         xy_std = math.sqrt(max(covariance[0] + covariance[7], 0.0))
@@ -289,40 +344,61 @@ class LocalizationManagerNode(Node):
         self._publish_status(QuadrupedMainStatus.LOCALIZATION_LOST)
 
     def _initialpose_cb(self, msg):
-        with self._state_lock:
-            if self._status == QuadrupedMainStatus.PENDING:
-                # Deliberately no status publish: overwriting a live session's PENDING with
-                # FAILED would report the wrong outcome for the run that is still going.
-                self.get_logger().warn(
-                    'A localization attempt is already pending; ignoring this initial pose')
+        if not self._claim():
+            # Deliberately no status publish: overwriting a live session's PENDING with
+            # FAILED would report the wrong outcome for the run that is still going.
+            self.get_logger().warn(
+                'A map load or localization attempt is in progress; ignoring this initial pose')
+            return
+        try:
+            reason = self._gate_blocked()
+            if reason is None:
+                with self._state_lock:
+                    current_map = self._current_map
+                if not current_map:
+                    # AMCL would accept the pose and then warn "Waiting for map...." forever,
+                    # which reads to the operator as localization silently doing nothing.
+                    reason = 'no map loaded -- load one via /map_load first'
+            if reason is None:
+                reason = self._check_pose(msg)
+            if reason is not None:
+                self.get_logger().error(f'Initial pose rejected: {reason}')
+                self._publish_status(QuadrupedMainStatus.FAILED)
                 return
+            self._seed_pose(msg)
+        finally:
+            self._release()
 
-        reason = self._gate_blocked()
-        if reason is not None:
-            self.get_logger().error(f'Initial pose rejected: {reason}')
-            self._publish_status(QuadrupedMainStatus.FAILED)
-            return
+    # -- the steps both entry points share -------------------------------------
 
+    def _load_map(self, name):
+        """Load an already-checked map into nav2. Returns (ok, message).
+
+        A failure changes nothing: map_server keeps the map it had, and localization_status
+        is left alone.
+        """
+        yaml_path = self._yaml_path(name)
+        ok, result = self._call_and_wait(
+            self._load_map_cli, LoadMap.Request(map_url=yaml_path), '/map_server/load_map')
+        if not ok:
+            return False, f'Map load failed: {result}'
+        if result.result != LoadMap.Response.RESULT_SUCCESS:
+            detail = LOAD_MAP_ERRORS.get(result.result, f'unknown result code {result.result}')
+            return False, f'Map load failed: {detail}'
+
+        # A new map invalidates any previous fix -- the old pose means nothing in it.
+        self._publish_status(QuadrupedMainStatus.NOT_STARTED)
         with self._state_lock:
-            current_map = self._current_map
-        if not current_map:
-            # AMCL would accept the pose and then warn "Waiting for map...." forever, which
-            # reads to the operator as localization silently doing nothing.
-            self.get_logger().error(
-                'Initial pose rejected: no map loaded -- load one via /map_load first')
-            self._publish_status(QuadrupedMainStatus.FAILED)
-            return
+            self._have_amcl_pose = False
+            self._low_count = 0
+        self._publish_current_map(name)
 
-        global_frame = str(self._param('global_frame'))
-        if msg.header.frame_id.lstrip('/') != global_frame:
-            # AMCL drops a mismatched frame with only a warning of its own, so without this
-            # the pose would vanish and the run would fail with no visible cause.
-            self.get_logger().error(
-                f"Initial pose is in frame '{msg.header.frame_id}', AMCL only accepts "
-                f"'{global_frame}' -- discarding")
-            self._publish_status(QuadrupedMainStatus.FAILED)
-            return
+        # Best effort, after the 2D map is already live: this never fails the load.
+        self._load_pcd_for(name, yaml_path)
+        return True, f'Map loaded: {name}'
 
+    def _seed_pose(self, msg):
+        """Hand an already-checked pose to AMCL and wait for it to converge. (ok, message)."""
         outgoing = msg
         if (abs(msg.pose.covariance[0]) < 1e-9 and abs(msg.pose.covariance[7]) < 1e-9
                 and abs(msg.pose.covariance[35]) < 1e-9):
@@ -340,12 +416,10 @@ class LocalizationManagerNode(Node):
 
         self._publish_status(QuadrupedMainStatus.PENDING)
         self._initialpose_pub.publish(outgoing)
-
-        self._run_convergence()
-
-    # -- the initial-pose convergence run --------------------------------------
+        return self._run_convergence()
 
     def _run_convergence(self):
+        """Drive AMCL with no-motion updates, then judge the fix. Returns (ok, message)."""
         attempts = int(self._param('nomotion_attempts'))
         interval = float(self._param('nomotion_interval_sec'))
 
@@ -356,9 +430,7 @@ class LocalizationManagerNode(Node):
             ok, result = self._call_and_wait(
                 self._nomotion_cli, Empty.Request(), '/request_nomotion_update')
             if not ok:
-                self.get_logger().error(f'Localization failed: {result}')
-                self._publish_status(QuadrupedMainStatus.FAILED)
-                return
+                return self._converged(False, f'Localization failed: {result}')
             self.get_logger().debug(f'no-motion update {i + 1}/{attempts}')
             interval_done = threading.Event()
             interval_done.wait(interval)
@@ -368,83 +440,81 @@ class LocalizationManagerNode(Node):
             have_pose = self._have_amcl_pose
 
         if not have_pose:
-            self.get_logger().error(
-                'Localization failed: no /amcl_pose received -- is AMCL running and is a '
-                'map loaded?')
-            self._publish_status(QuadrupedMainStatus.FAILED)
-            return
+            return self._converged(
+                False, 'Localization failed: no /amcl_pose received -- is AMCL running and '
+                       'is a map loaded?')
 
         threshold = float(self._param('acquire_threshold'))
         if confidence > threshold:
-            self.get_logger().info(
-                f'Localization succeeded: confidence {confidence:.2f} > {threshold:.2f}')
+            return self._converged(
+                True, f'Localization succeeded: confidence {confidence:.2f} > {threshold:.2f}')
+        return self._converged(
+            False, f'Localization failed: confidence {confidence:.2f} <= {threshold:.2f}')
+
+    def _converged(self, ok, message):
+        # Two call sites on purpose: rclpy raises if one call site changes severity.
+        if ok:
+            self.get_logger().info(message)
             self._publish_status(QuadrupedMainStatus.LOCALIZED)
         else:
-            self.get_logger().warn(
-                f'Localization failed: confidence {confidence:.2f} <= {threshold:.2f}')
+            self.get_logger().error(message)
             self._publish_status(QuadrupedMainStatus.FAILED)
+        return ok, message
 
     # -- services --------------------------------------------------------------
 
     def _map_load_cb(self, request, response):
-        reason = self._gate_blocked()
-        if reason is not None:
-            # Note this leaves localization_status alone: a refused load changed nothing, so
-            # reporting a localization failure here would be a lie.
-            response.success = False
-            response.message = f'Map load rejected: {reason}'
-            self.get_logger().error(response.message)
+        if not self._claim():
+            return self._reply(
+                response, False,
+                'Map load rejected: a map load or localization attempt is in progress')
+        try:
+            name = request.data.strip()
+            # A refusal leaves localization_status alone: it changed nothing, so reporting a
+            # localization failure here would be a lie.
+            reason = self._gate_blocked() or self._check_map_name(name)
+            if reason is not None:
+                return self._reply(response, False, f'Map load rejected: {reason}')
+            return self._reply(response, *self._load_map(name))
+        finally:
+            self._release()
+
+    def _relocalize_cb(self, request, response):
+        """Closed loop: load the map if needed, seed the pose, and answer with the outcome.
+
+        Everything checkable is checked first, so a refused request touches nothing on the
+        robot and leaves localization_status alone.
+        """
+        if not self._claim():
+            return self._reply(
+                response, False,
+                'Relocalize rejected: a map load or localization attempt is already in progress')
+        try:
+            name = request.map_name.strip()
+            reason = (self._gate_blocked() or self._check_map_name(name)
+                      or self._check_pose(request.initial_pose))
+            if reason is not None:
+                return self._reply(response, False, f'Relocalize rejected: {reason}')
+
+            with self._state_lock:
+                loaded = self._current_map == name
+            if loaded:
+                # Matched on the name alone. A retry after a failed convergence is the usual
+                # case, and reloading a large map for it costs seconds for nothing.
+                map_note = f"Map '{name}' already loaded"
+                self.get_logger().info(f'{map_note}; skipping the load')
+            else:
+                ok, message = self._load_map(name)
+                if not ok:
+                    return self._reply(response, False, message)
+                map_note = f"Map '{name}' loaded"
+
+            ok, message = self._seed_pose(request.initial_pose)
+            response.success = ok
+            response.message = f'{map_note}; {message}'
             return response
-
-        # A BARE NAME, never a path -- MAP_NAME_RE is then the only thing that has to be
-        # right for path traversal to be impossible, and the extensions are appended here.
-        name = request.data.strip()
-        if not MAP_NAME_RE.match(name):
-            response.success = False
-            response.message = (
-                f"Map load rejected: '{name}' is not a valid map name "
-                '(letters, digits and underscore only)')
-            self.get_logger().error(response.message)
-            return response
-
-        yaml_path = self._yaml_path(name)
-        if not os.path.isfile(yaml_path):
-            response.success = False
-            response.message = f'Map load rejected: {yaml_path} does not exist'
-            self.get_logger().error(response.message)
-            return response
-
-        ok, result = self._call_and_wait(
-            self._load_map_cli, LoadMap.Request(map_url=yaml_path),
-            '/map_server/load_map')
-        if not ok:
-            response.success = False
-            response.message = f'Map load failed: {result}'
-            self.get_logger().error(response.message)
-            return response
-
-        if result.result != LoadMap.Response.RESULT_SUCCESS:
-            detail = LOAD_MAP_ERRORS.get(result.result, f'unknown result code {result.result}')
-            response.success = False
-            response.message = f'Map load failed: {detail}'
-            self.get_logger().error(response.message)
-            return response
-
-        # A new map invalidates any previous fix -- the old pose means nothing in it.
-        self._publish_status(QuadrupedMainStatus.NOT_STARTED)
-        with self._state_lock:
-            self._have_amcl_pose = False
-            self._low_count = 0
-        self._publish_current_map(name)
-
-        # Best effort, after the 2D map is already live: this never fails the load.
-        self._load_pcd_for(name, yaml_path)
-
-        response.success = True
-        response.message = f'Map loaded: {name}'
-        self.get_logger().info(response.message)
-        return response
-
+        finally:
+            self._release()
 
 def main():
     rclpy.init()

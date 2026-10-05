@@ -11,12 +11,12 @@ import {
 } from '../lib/c2Pins'
 import { fitView, normaliseMapEntry, quaternionToYaw } from '../lib/c2Coords'
 import {
-  cancelNavGoal, loadNavMap, setQuadrupedPaused, subscribe,
+  cancelNavGoal, setQuadrupedPaused, subscribe,
 } from '../services/rosbridge'
 import { ConfirmSendModal } from './ConfirmSendModal'
 import { MapOverlay } from './MapOverlay'
 import {
-  nextNavplanId, publishInitialPose, sendNavigationPlan, subscribeLaserScan,
+  nextNavplanId, relocalize, sendNavigationPlan, subscribeLaserScan,
 } from './lib/navplanRos'
 import { degFromYaw } from './lib/quat'
 
@@ -84,6 +84,18 @@ function Aside({ children, color }) {
   )
 }
 
+function Spinner() {
+  return (
+    <span
+      className="animate-spin"
+      style={{
+        display: 'inline-block', width: 10, height: 10, marginRight: 6, verticalAlign: '-1px',
+        border: '2px solid currentColor', borderTopColor: 'transparent', borderRadius: '50%',
+      }}
+    />
+  )
+}
+
 export function NavplanTesterPage() {
   // -- robot state ---------------------------------------------------------
   const { active: statusLive, lastMsg: status } = useTopicActivity(STATUS_TOPIC, STATUS_TYPE, 1500)
@@ -141,8 +153,8 @@ export function NavplanTesterPage() {
 
   // A refresh loses the selected map, but the robot still has one loaded. Once both the map
   // list and the robot's current_map are known, show that map -- once, and only if the
-  // operator hasn't picked one, so this never overrides a choice. View only: no loadNavMap,
-  // the robot already has it. The boot placeholder (default_map) is hidden from /api/maps2d,
+  // operator hasn't picked one, so this never overrides a choice. The boot placeholder
+  // (default_map) is hidden from /api/maps2d,
   // so it is never restored; there is nothing to plan on there anyway.
   const restoredMap = useRef(false)
   useEffect(() => {
@@ -279,16 +291,18 @@ export function NavplanTesterPage() {
   // -- actions -------------------------------------------------------------
   const finish = (ok, message) => { setBusy(false); setResult({ ok, message }) }
 
-  function handleLoadMap() {
-    if (!mapName) return
-    setBusy(true); setResult(null)
-    loadNavMap(mapName,
-      (r) => finish(r.success, r.message),
-      (e) => finish(false, String(e)))
-  }
-
   const clearRelocPin = useCallback(() => {
     setPins((prev) => prev.filter((p) => p.type !== INITIAL_POSE_TYPE))
+    setHoverWorld(null)
+    setReloc('idle')
+  }, [])
+
+  // Browsing only -- nothing is sent to the robot. Waypoints and the pose pin are coordinates
+  // on the map they were drawn on, so they go with it rather than reappearing on another.
+  const selectMap = useCallback((name) => {
+    setMapName(name)
+    setPins([])
+    setSelectedId(null)
     setHoverWorld(null)
     setReloc('idle')
   }, [])
@@ -303,7 +317,8 @@ export function NavplanTesterPage() {
       || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')
 
     const onKey = (e) => {
-      if (isTyping(e.target)) return
+      // The pin is in flight; removing it now would leave a failed reply with nothing to retry.
+      if (isTyping(e.target) || reloc === 'sending') return
 
       if (e.key === 'Escape') {
         if (reloc !== 'idle') clearRelocPin()
@@ -324,13 +339,18 @@ export function NavplanTesterPage() {
     return () => window.removeEventListener('keydown', onKey)
   }, [selectedId, initialPin, reloc, clearRelocPin, deletePin])
 
+  // Sent with the viewed map, which need not be the robot's: relocalizing is how the robot is
+  // moved onto it. The reply is the outcome, so the pin stays on failure to be nudged and resent.
   function handleSendRelocalize() {
-    if (!initialPin) return
-    publishInitialPose({ x: initialPin.x, y: initialPin.y, yaw: initialPin.yaw ?? 0 })
-    // The pin has done its job. localization_manager reports the outcome on
-    // localization_status (pending -> localized / failed), which the panel already shows.
-    clearRelocPin()
-    setResult({ ok: true, message: 'Initial pose sent — watch LOCALIZATION converge.' })
+    if (!initialPin || !mapName) return
+    setReloc('sending'); setBusy(true); setResult(null)
+    relocalize({ mapName, x: initialPin.x, y: initialPin.y, yaw: initialPin.yaw ?? 0 },
+      (r) => {
+        finish(r.success, r.message)
+        if (r.success) clearRelocPin()
+        else setReloc('placed')
+      },
+      (e) => { finish(false, String(e)); setReloc('placed') })
   }
 
   // The robot pose only means something on the map it is localized on. Shared by the overlay
@@ -340,12 +360,13 @@ export function NavplanTesterPage() {
   const [confirm, setConfirm] = useState(null)   // the plan awaiting confirmation
 
   function handleSend() {
-    if (!waypoints.length || !robotMap) return
+    if (!waypoints.length || !mapName) return
     setConfirm({
       navplanId: nextNavplanId(),
-      // The robot's loaded map, not the one being viewed: navplan_processor tallies against
-      // exactly this, and rejecting here with a clear message beats a round trip.
-      mapName: robotMap,
+      // The map the waypoints were drawn on, not the robot's. navplan_processor rejects the
+      // plan when the robot is on another one -- tagging it with the robot's map instead would
+      // pass that check and drive to coordinates from the wrong map.
+      mapName,
       waypoints: waypoints.map((p) => ({ x: p.x, y: p.y, yaw: effectiveYaw(p) })),
       // Display only. sendNavigationPlan destructures just navplanId/mapName/waypoints, so
       // this can never reach the service. Snapshotted, not live: the modal shows what the
@@ -381,6 +402,7 @@ export function NavplanTesterPage() {
   }
 
   const mapMismatch = Boolean(mapName && robotMap && mapName !== robotMap)
+  const onRobotMap = Boolean(mapName && mapName === robotMap)
 
   // The overlay has four independent preconditions and used to fail all of them silently,
   // which is a miserable thing to debug. Name whichever one is blocking.
@@ -394,37 +416,41 @@ export function NavplanTesterPage() {
 
   const widgets = [
     <Widget
-      key="load"
+      key="map"
       step="1"
-      title="LOAD MAP"
+      title="MAP"
       aside={<Aside>robot: {robotMap || '—'}</Aside>}
     >
-      <select
-        className="val-mono"
-        value={mapName ?? ''}
-        onChange={(e) => setMapName(e.target.value || null)}
-        style={{
-          width: '100%', fontSize: 11, padding: '4px 6px', marginBottom: 6,
-          background: 'var(--bg)', color: 'var(--text-h)',
-          border: '1px solid var(--border)', borderRadius: 4,
-        }}
-      >
-        <option value="">{maps === null ? 'loading…' : 'select a map…'}</option>
-        {(maps ?? []).map((m) => (
-          <option key={m.name} value={m.name}>{m.name}</option>
-        ))}
-      </select>
-      <button
-        className="btn-icon"
-        style={{ width: '100%' }}
-        disabled={!mapName || busy}
-        onClick={handleLoadMap}
-      >
-        Load on robot
-      </button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span
+          title={onRobotMap ? 'The robot is on this map' : 'The robot is not on this map'}
+          style={{
+            width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+            background: onRobotMap ? TONE.ok : 'var(--border)',
+          }}
+        />
+        <select
+          className="val-mono"
+          value={mapName ?? ''}
+          onChange={(e) => selectMap(e.target.value || null)}
+          disabled={busy}
+          style={{
+            flex: 1, minWidth: 0, fontSize: 11, padding: '4px 6px',
+            background: 'var(--bg)', color: 'var(--text-h)',
+            border: '1px solid var(--border)', borderRadius: 4,
+          }}
+        >
+          <option value="">{maps === null ? 'loading…' : 'select a map…'}</option>
+          {(maps ?? []).map((m) => (
+            <option key={m.name} value={m.name}>
+              {m.name === robotMap ? `● ${m.name}` : m.name}
+            </option>
+          ))}
+        </select>
+      </div>
       {mapMismatch && (
         <div style={{ fontSize: 10, color: TONE.warn, marginTop: 4 }}>
-          Robot is on “{robotMap}”. Load this map, or plans will be rejected.
+          Robot is on “{robotMap}”. Relocalize here to drive on this map.
         </div>
       )}
     </Widget>,
@@ -439,8 +465,7 @@ export function NavplanTesterPage() {
         <button
           className="btn-icon"
           style={{ width: '100%' }}
-          // localization_manager drops a second pose while one is converging, and it
-          // is the only rejection it does NOT report on localization_status.
+          // /relocalize refuses while any attempt runs, including one started from Lichtblick.
           disabled={!info || busy || locStatus === 'pending'}
           onClick={() => setReloc('placing')}
         >
@@ -454,8 +479,16 @@ export function NavplanTesterPage() {
                 + `${initialPin.headingSet ? ` · ${degFromYaw(initialPin.yaw).toFixed(0)}°` : ' · heading not set'}`
               : 'Click the map to place the robot'}
           </div>
+          <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 6 }}>
+            on “{mapName}”{mapMismatch ? ' · loads it on the robot' : ''}
+          </div>
           <div style={{ display: 'flex', gap: 6 }}>
-            <button className="btn-icon" style={{ flex: 1 }} onClick={clearRelocPin}>
+            <button
+              className="btn-icon"
+              style={{ flex: 1 }}
+              disabled={reloc === 'sending'}
+              onClick={clearRelocPin}
+            >
               Cancel
             </button>
             <button
@@ -464,7 +497,7 @@ export function NavplanTesterPage() {
               disabled={!initialPin || busy}
               onClick={handleSendRelocalize}
             >
-              Send pose ▶
+              {reloc === 'sending' ? <><Spinner />Relocalizing…</> : 'Send pose ▶'}
             </button>
           </div>
         </>
@@ -514,7 +547,7 @@ export function NavplanTesterPage() {
         <button
           className="btn-icon"
           style={{ flex: 2, borderColor: 'var(--accent-bright)' }}
-          disabled={!waypoints.length || !robotMap || busy}
+          disabled={!waypoints.length || !mapName || busy}
           onClick={handleSend}
         >
           Send navplan ▶

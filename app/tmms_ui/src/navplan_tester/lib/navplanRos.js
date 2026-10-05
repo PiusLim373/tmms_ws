@@ -9,31 +9,40 @@ import { decodeLaserScanCdr } from '../../lib/rosCdr'
 
 import { yawToQuaternion } from './quat'
 
-const _publishers = {}
-function getPublisher(name, messageType) {
-  if (!_publishers[name]) _publishers[name] = new Topic({ ros, name, messageType })
-  return _publishers[name]
-}
-
 // localization_manager rejects anything whose frame_id is not its global_frame.
 const MAP_FRAME = 'map'
 
+// rosbridge gives up on a service call after 5 s unless told otherwise. /relocalize answers
+// only after a possible map load plus ~6 s of convergence; /navigation_plan can wait on yasmin.
+const RELOCALIZE_TIMEOUT_SEC = 60
+const NAVPLAN_TIMEOUT_SEC = 20
+
 /**
- * Seed AMCL. Covariance is left at zeros on purpose: localization_manager substitutes its
- * own initial_cov_xy / initial_cov_yaw when entries 0, 7 and 35 are all zero, so the
- * spread stays configured in one place rather than being hardcoded here.
+ * Load `mapName` on the robot if it isn't already, seed AMCL at the pose, and answer once it
+ * has converged or failed -- the reply is the outcome, not just an acknowledgement.
+ *
+ * Covariance is left at zeros on purpose: localization_manager substitutes its own
+ * initial_cov_xy / initial_cov_yaw when entries 0, 7 and 35 are all zero, so the spread stays
+ * configured in one place rather than being hardcoded here.
  */
-export function publishInitialPose({ x, y, yaw }) {
-  getPublisher('/lichtblick_initialpose', 'geometry_msgs/PoseWithCovarianceStamped').publish({
-    header: { frame_id: MAP_FRAME },
-    pose: {
-      pose: {
-        position: { x, y, z: 0 },
-        orientation: yawToQuaternion(yaw),
+export function relocalize({ mapName, x, y, yaw }, onResult, onError) {
+  callRosService(
+    '/relocalize',
+    'tmms_msgs/srv/RelocalizeTrigger',
+    {
+      map_name: mapName,
+      initial_pose: {
+        header: { frame_id: MAP_FRAME },
+        pose: {
+          pose: { position: { x, y, z: 0 }, orientation: yawToQuaternion(yaw) },
+          covariance: new Array(36).fill(0),
+        },
       },
-      covariance: new Array(36).fill(0),
     },
-  })
+    onResult,
+    onError,
+    RELOCALIZE_TIMEOUT_SEC,
+  )
 }
 
 /**
@@ -60,6 +69,7 @@ export function sendNavigationPlan({ navplanId, mapName, waypoints }, onResult, 
     },
     onResult,
     onError,
+    NAVPLAN_TIMEOUT_SEC,
   )
 }
 

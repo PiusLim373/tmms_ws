@@ -285,16 +285,17 @@ sudo supervisorctl start quadruped:tmms_ui  # start the webapp
 
 How a C2 (fleet manager) drives the robot's navigation:
 
-1. [Load a map](#1-load-a-map)
-2. [Relocalize](#2-relocalize) the robot on it
-3. [Send a navplan](#3-send-a-navplan): a list of waypoints the robot drives through in order
-4. [Cancel or replace](#4-cancel-or-replace-a-navplan) it if needed
+1. [Relocalize](#1-relocalize): put the robot on a map, at a pose
+2. [Send a navplan](#2-send-a-navplan): a list of waypoints the robot drives through in order
+3. [Cancel or replace](#3-cancel-or-replace-a-navplan) it if needed
 
 Everything goes through rosbridge. Each step shows the `ros2` CLI form, for testing on the robot, and the rosbridge message C2 sends. Every outcome is read from one topic, [`/quadruped_main_status`](#robot-status).
 
+The robot also accepts an older two-step flow, `/map_load` followed by a pose on the `/lichtblick_initialpose` topic, which Lichtblick's Navigation tab uses. C2 doesn't need it.
+
 For service calls, rosbridge answers with `result: false` only when the call itself failed (e.g. the service is not running, or it timed out). A request the robot refuses comes back as `result: true` with `values.success: false` and the reason in `values.message`.
 
-rosbridge gives up on a service call after **5 s** unless the request carries a `timeout` (seconds). `/map_load` and `/navigation_plan` can take longer, so their samples set one. A call that times out returns `result: false` even though the robot may still complete it, so check `/quadruped_main_status` afterwards.
+rosbridge gives up on a service call after **5 s** unless the request carries a `timeout` (seconds). `/relocalize` and `/navigation_plan` can take longer, so their samples set one. A call that times out returns `result: false` even though the robot may still complete it, so check `/quadruped_main_status` afterwards.
 
 ### Robot status
 
@@ -336,13 +337,13 @@ Each message arrives as:
 | `navigation_state` | What navigation is doing; see below. |
 | `is_paused` | `true` while an operator has manual control. |
 | `localization_status` | `not_started` → `pending` → `localized` or `failed`. A localized robot can later drop to `localization_lost`. |
-| `current_map` | Name of the loaded map; empty until one is loaded. |
+| `current_map` | Name of the loaded map, set by [`/relocalize`](#1-relocalize); empty until one is loaded. |
 | `current_navplan_id` | The latest navplan the robot accepted; `0` before the first one. |
-| `current_navplan_status` | Its status; see [step 3](#3-send-a-navplan). |
+| `current_navplan_status` | Its status; see [step 2](#2-send-a-navplan). |
 
 `navigation_state`:
 
-| Value | Meaning | Navplan | Map load / relocalize |
+| Value | Meaning | Navplan | Relocalize |
 |---|---|---|---|
 | `unlocalized` | Not localized yet, or localization was lost | refused | allowed |
 | `idle` | Ready | allowed | allowed |
@@ -354,77 +355,75 @@ Each message arrives as:
 
 Values are sampled at 5 Hz, so a state that lasts only milliseconds (such as a navplan's `accepted`) may never appear. If the robot's controller restarts, the two navplan fields read `0` / empty until the next navplan status change.
 
-### 1. Load a map
+### 1. Relocalize
 
-**Service** `/map_load` (`tmms_msgs/srv/StringTrigger`: `string data` → `bool success`, `string message`)
+**Service** `/relocalize` (`tmms_msgs/srv/RelocalizeTrigger`: `geometry_msgs/PoseWithCovarianceStamped initial_pose`, `string map_name` → `bool success`, `string message`)
 
-`data` is the bare map name, letters, digits and `_` only. The robot loads `~/.htxgrrt/maps/png/<name>.yaml` with its `.png`, then the 3D cloud named in the yaml's `pcd_file`, if any. The response comes after both, usually within a few seconds, up to about 30 s at worst.
+Puts the robot on a map at a pose, and replies only once that has worked or failed. In order, it:
+
+1. Checks the request. A refused request changes nothing on the robot.
+2. Loads `map_name`, unless it is already `current_map`. A retry after a failed attempt therefore skips the slow map load.
+3. Hands the pose to localization and lets it converge, about 6 s.
+4. Replies with the outcome.
+
+It usually answers within 10 s, and can take about 40 s when it loads a large map.
+
+- `map_name` is the bare map name, letters, digits and `_` only. The robot loads `~/.htxgrrt/maps/png/<name>.yaml` with its `.png`, then the 3D cloud named in the yaml's `pcd_file`, if any.
+- `initial_pose` is roughly where the robot is on that map; the robot refines it.
+  - `header.frame_id` must be `map`.
+  - Heading is a quaternion: for a yaw of θ radians, `z = sin(θ/2)` and `w = cos(θ/2)`.
+  - Leave the covariance out (all zeros); the robot fills in its own default spread.
 
 ```bash
-ros2 service call /map_load tmms_msgs/srv/StringTrigger "{data: 'my_map'}"
+ros2 service call /relocalize tmms_msgs/srv/RelocalizeTrigger "{map_name: 'my_map',
+  initial_pose: {header: {frame_id: map}, pose: {pose: {position: {x: 1.0, y: 2.0, z: 0.0}, orientation: {z: 0.7071, w: 0.7071}}}}}"
 ```
 
 ```json
-{"op": "call_service", "id": "map_load_1", "service": "/map_load", "type": "tmms_msgs/srv/StringTrigger", "args": {"data": "my_map"}, "timeout": 30}
+{"op": "call_service", "id": "relocalize_1", "service": "/relocalize", "type": "tmms_msgs/srv/RelocalizeTrigger",
+ "args": {"map_name": "my_map",
+   "initial_pose": {"header": {"frame_id": "map"}, "pose": {"pose": {"position": {"x": 1.0, "y": 2.0, "z": 0.0}, "orientation": {"x": 0.0, "y": 0.0, "z": 0.7071, "w": 0.7071}}}}},
+ "timeout": 60}
 ```
 
 Success:
 
 ```json
-{"op": "service_response", "id": "map_load_1", "service": "/map_load", "result": true, "values": {"success": true, "message": "Map loaded: my_map"}}
+{"op": "service_response", "id": "relocalize_1", "service": "/relocalize", "result": true, "values": {"success": true, "message": "Map 'my_map' loaded; Localization succeeded: confidence 0.82 > 0.50"}}
 ```
 
-`current_map` becomes `my_map` and `localization_status` resets to `not_started`: the old pose means nothing on the new map, so [relocalize](#2-relocalize) next.
+When the map load was skipped, the message starts `Map 'my_map' already loaded;` instead.
 
-On failure `success` is `false`, nothing changes on the robot, and `message` is one of:
+What changes in `/quadruped_main_status`:
+
+| Outcome | `current_map` | `localization_status` |
+|---|---|---|
+| Refused, or the map load failed | unchanged | unchanged |
+| Map loaded | `my_map` | `not_started` → `pending` → `localized` or `failed` |
+| Map already loaded | unchanged | `pending` → `localized` or `failed` |
+
+Once `localized`, `navigation_state` moves from `unlocalized` to `idle`.
+
+On failure `success` is `false` and `message` is one of:
 
 | `message` | Cause |
 |---|---|
-| `Map load rejected: robot is '<state>'; allowed: canceled, error, idle, navigation_failed, paused, unlocalized` | The robot is navigating. Cancel first. |
-| `Map load rejected: '<name>' is not a valid map name (letters, digits and underscore only)` | Bad name. |
-| `Map load rejected: <path> does not exist` | No such map on the robot. |
-| `Map load rejected: no /quadruped_main_status received yet -- is quadruped_controller up?` | The robot's software is still starting. |
+| `Relocalize rejected: a map load or localization attempt is already in progress` | Another relocalization is running, including one started from Lichtblick. Wait for it to finish. |
+| `Relocalize rejected: robot is '<state>'; allowed: canceled, error, idle, navigation_failed, paused, unlocalized` | The robot is navigating. Cancel first. |
+| `Relocalize rejected: '<name>' is not a valid map name (letters, digits and underscore only)` | Bad name. |
+| `Relocalize rejected: <path> does not exist` | No such map on the robot. |
+| `Relocalize rejected: initial pose is in frame '<frame>', AMCL only accepts 'map'` | Set `header.frame_id` to `map`. |
+| `Relocalize rejected: no /quadruped_main_status received yet -- is quadruped_controller up?` | The robot's software is still starting. |
 | `Map load failed: /map_server/load_map is not available`, `... did not return within 10s`, `... call failed` | The navigation stack is not running or not responding. |
 | `Map load failed: map file does not exist`, `invalid map data (is the .png readable?)`, `invalid map metadata (check the .yaml)`, `undefined failure in map_server`, `unknown result code <n>` | The map files are broken. |
+| `Map '<name>' loaded; Localization failed: confidence <c> <= 0.50` | The estimate is too far off for the lidar to match the map. Send a closer one; the map is not reloaded. |
+| `Map '<name>' loaded; Localization failed: /request_nomotion_update is not available`, `... did not return within 10s`, `... call failed`, `... no /amcl_pose received -- is AMCL running and is a map loaded?` | Localization (AMCL) is not running. |
 
-### 2. Relocalize
+The last two start `Map '<name>' already loaded;` when the load was skipped.
 
-**Topic** `/lichtblick_initialpose` (`geometry_msgs/msg/PoseWithCovarianceStamped`)
+If the robot later loses its position, `localization_status` becomes `localization_lost` and `navigation_state` becomes `unlocalized`, stopping any running navplan. Call `/relocalize` again.
 
-Publish roughly where the robot is on the map; the robot refines it.
-
-- `header.frame_id` must be `map`.
-- Heading is a quaternion: for a yaw of θ radians, `z = sin(θ/2)` and `w = cos(θ/2)`.
-- Leave the covariance out (all zeros); the robot fills in its own default spread.
-- Don't publish to `/initialpose` directly. It skips the checks and the status reporting below.
-
-```bash
-ros2 topic pub --once /lichtblick_initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
-  "{header: {frame_id: map}, pose: {pose: {position: {x: 1.0, y: 2.0, z: 0.0}, orientation: {z: 0.7071, w: 0.7071}}}}"
-```
-
-```json
-{"op": "advertise", "topic": "/lichtblick_initialpose", "type": "geometry_msgs/msg/PoseWithCovarianceStamped"}
-{"op": "publish", "topic": "/lichtblick_initialpose", "msg": {"header": {"frame_id": "map"}, "pose": {"pose": {"position": {"x": 1.0, "y": 2.0, "z": 0.0}, "orientation": {"x": 0.0, "y": 0.0, "z": 0.7071, "w": 0.7071}}}}}
-```
-
-This is a topic, so there is no response. Watch `localization_status` instead: it goes `pending` for about 6 s, then `localized` or `failed`. Once `localized`, `navigation_state` moves from `unlocalized` to `idle`.
-
-`failed` carries no reason; that is only in the robot's log. The causes are:
-
-| Cause | Fix |
-|---|---|
-| The robot is `navigating` | Cancel first. |
-| No map loaded | [Load a map](#1-load-a-map) first. |
-| `header.frame_id` is not `map` | Fix the message. |
-| The estimate is too far off for the lidar to match the map | Send a closer estimate. |
-| The navigation stack is not running | Restart it. |
-
-A pose sent while one is already `pending` is ignored completely, with no status change. Wait for `localized` or `failed` before sending another.
-
-If the robot later loses its position, `localization_status` becomes `localization_lost` and `navigation_state` becomes `unlocalized`, stopping any running navplan. Relocalize again.
-
-### 3. Send a navplan
+### 2. Send a navplan
 
 **Service** `/navigation_plan` (`tmms_msgs/srv/NavigationPlanTrigger`: `NavigationPlan navigation_plan` → `bool success`, `string message`)
 
@@ -433,10 +432,10 @@ If the robot later loses its position, `localization_status` becomes `localizati
 | Field | Type | Notes |
 |---|---|---|
 | `navplan_id` | `int64` | Unique and non-zero. Epoch milliseconds works. |
-| `map_name` | `string` | Must equal `current_map`. |
+| `map_name` | `string` | The map the waypoints were drawn on. Refused unless it equals `current_map`, so relocalize onto a map before driving on it. |
 | `timestamp` | `string` | Free text, e.g. ISO 8601. Not checked. |
 | `status` | `string` | Send `created`. Not checked. |
-| `waypoints` | `geometry_msgs/Pose[]` | In the `map` frame, at least one, driven through in order. Orientation as in [step 2](#2-relocalize). |
+| `waypoints` | `geometry_msgs/Pose[]` | In the `map` frame, at least one, driven through in order. Orientation as in [step 1](#1-relocalize). |
 
 ```bash
 ros2 service call /navigation_plan tmms_msgs/srv/NavigationPlanTrigger "{navigation_plan: {
@@ -467,7 +466,7 @@ A navplan is accepted only when a map is loaded, `localization_status` is `local
 | `message` | Cause |
 |---|---|
 | `plan has no waypoints` | Empty `waypoints`. |
-| `no map is loaded` | Load a map first. |
+| `no map is loaded` | Relocalize first. |
 | `plan was built on map '<a>' but the robot is localized on '<b>'` | `map_name` ≠ `current_map`. |
 | `robot is not localized (localization_status '<s>')` | Relocalize first. |
 | `robot is '<state>'; cancel the current goal and wait for 'canceled' first` | `navigation_state` doesn't accept navplans (e.g. `navigating`, `paused`, `error`). |
@@ -488,13 +487,13 @@ accepted → rejected | errored                (could not be started)
 | Final status | Meaning | `navigation_state` after |
 |---|---|---|
 | `completed` | Reached the last waypoint | `idle` |
-| `cancelled` | Cancelled with [`/cancel_goal`](#4-cancel-or-replace-a-navplan) | `canceled` |
+| `cancelled` | Cancelled with [`/cancel_goal`](#3-cancel-or-replace-a-navplan) | `canceled` |
 | `errored` | Navigation gave up, e.g. no path or the robot is stuck | `navigation_failed` |
 | `errored` | Localization was lost | `unlocalized` |
 | `errored` | A system fault | `error`, then `idle` once it clears |
 | `rejected` or `errored` | Could not be started: the navigation stack refused it or is not running | unchanged |
 
-### 4. Cancel or replace a navplan
+### 3. Cancel or replace a navplan
 
 **Service** `/cancel_goal` (`std_srvs/srv/Empty`)
 
