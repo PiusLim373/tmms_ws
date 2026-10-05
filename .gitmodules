@@ -18,3 +18,7 @@
 	path = src/tmms_navigation/navigation2
 	url = git@github.com:PiusLim373/navigation2.git
 	branch = tmms
+[submodule "src/utils/livox_ros_driver2"]
+	path = src/utils/livox_ros_driver2
+	url = git@github.com:PiusLim373/livox_ros_driver2.git
+	branch = tmms
