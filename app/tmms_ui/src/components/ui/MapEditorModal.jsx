@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { suspendKeyboard } from '../../hooks/useKeyboard'
 import {
-  cellsToImageData, cellsToPngBlob, OBSTACLE, FREE, PALETTE,
+  cellsToImageData, cellsToPngBlob, cropCells, cropOrigin, OBSTACLE, FREE, PALETTE,
 } from '../../lib/gridCodec'
 import {
   applyUndo, beginStroke, drawCircle, drawLine, drawRect, stampBrush,
@@ -28,6 +28,13 @@ const ICONS = {
       <path d="M17 8.5a1.5 1.5 0 0 1 3 0v5a7 7 0 0 1-7 7h-1a7 7 0 0 1-6-3.4l-2.2-3.7a1.5 1.5 0 0 1 2.5-1.6L8 14" />
     </>
   ),
+  // Photoshop's: two interlocking corners.
+  crop: (
+    <>
+      <path d="M6 2v14a2 2 0 0 0 2 2h14" />
+      <path d="M18 22V8a2 2 0 0 0-2-2H2" />
+    </>
+  ),
   rect: <rect x="3.5" y="5.5" width="17" height="13" rx="1" />,
   circle: <circle cx="12" cy="12" r="8.5" />,
   line: <path d="M4 20 20 4" />,
@@ -46,21 +53,26 @@ const ICONS = {
   ),
 }
 
-// Order is the rail's order, top to bottom: navigation first, then shapes, then freehand --
-// grouped the way Photoshop separates the two, with hand sitting on its own above the rule.
+// Order is the rail's order, top to bottom: navigation and crop first, then shapes, then
+// freehand -- grouped the way Photoshop separates them, with the non-painting tools above the
+// rule. C is Crop, as in Photoshop, so Circle takes O.
 const TOOLS = [
   { key: 'hand', label: 'Pan', hotkey: 'Space' },
+  { key: 'crop', label: 'Crop', hotkey: 'C' },
   { key: 'rect', label: 'Rectangle', hotkey: 'R' },
-  { key: 'circle', label: 'Circle', hotkey: 'C' },
+  { key: 'circle', label: 'Circle', hotkey: 'O' },
   { key: 'line', label: 'Line', hotkey: 'L' },
   { key: 'pencil', label: 'Pencil', hotkey: 'B' },
   { key: 'eraser', label: 'Eraser', hotkey: 'E' },
 ]
+const PAINT_RULE_INDEX = 2
 const SHAPE_TOOLS = new Set(['line', 'rect', 'circle'])
 // rect and circle only. `line` ignores the flag, so offering it there is a lie about what the
 // next stroke will do.
 const FILLABLE_TOOLS = new Set(['rect', 'circle'])
-const HOTKEY_TO_TOOL = { KeyB: 'pencil', KeyE: 'eraser', KeyL: 'line', KeyR: 'rect', KeyC: 'circle' }
+const HOTKEY_TO_TOOL = {
+  KeyB: 'pencil', KeyE: 'eraser', KeyL: 'line', KeyR: 'rect', KeyO: 'circle', KeyC: 'crop',
+}
 
 const ZOOM_STEP = 1.4
 
@@ -71,6 +83,21 @@ const MAX_ZOOM = 40
 const UNDO_LIMIT = 50
 
 const MAP_NAME_RE = /^[A-Za-z0-9_]+$/
+
+// A crop selection from two corner cells: ordered, clamped to the map, both corners included.
+function boxFrom(a, b, width, height) {
+  const clamp = (v, hi) => Math.min(hi, Math.max(0, v))
+  const x0 = clamp(Math.min(a.x, b.x), width - 1)
+  const x1 = clamp(Math.max(a.x, b.x), width - 1)
+  const y0 = clamp(Math.min(a.y, b.y), height - 1)
+  const y1 = clamp(Math.max(a.y, b.y), height - 1)
+  return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 }
+}
+
+function boxLabel(box, resolution) {
+  return `${box.w} × ${box.h} px · ${(box.w * resolution).toFixed(2)} × `
+    + `${(box.h * resolution).toFixed(2)} m`
+}
 
 /**
  * props:
@@ -99,6 +126,11 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
   // selector, which the inline styles used throughout this file cannot express -- and the
   // alternative, global class names in index.css for one component, is worse. Six buttons.
   const [hoveredTool, setHoveredTool] = useState(null)
+  // The open map's size and origin. They start as the source's but change on crop, so nothing
+  // past setup reads them off `source`. docRef is what the draw loop reads; this is for render.
+  const [doc, setDoc] = useState(null)
+  const [cropBox, setCropBoxState] = useState(null)   // null | { x, y, w, h } in cells
+  const [confirmReplace, setConfirmReplace] = useState(null)   // null | name about to be replaced
 
   const viewportRef = useRef(null)
   const displayRef = useRef(null)
@@ -115,6 +147,26 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
   const panRef = useRef(null)
   const undoRef = useRef([])
   const cursorRef = useRef(null)
+  const docRef = useRef(null)          // { width, height, origin, resolution }
+  const cropBoxRef = useRef(null)
+  // Size and origin last read from or written to disk under `savedRef.current.name`, so Save
+  // can tell when it would replace that map with a cropped one.
+  const savedRef = useRef(null)
+
+  const setCropBox = useCallback((box) => {
+    cropBoxRef.current = box
+    setCropBoxState(box)
+  }, [])
+
+  // Offscreen copy of the whole map at native size. Rebuilt whenever the size changes.
+  const rebuildBuffer = useCallback(() => {
+    const { width, height } = docRef.current
+    const buf = document.createElement('canvas')
+    buf.width = width
+    buf.height = height
+    buf.getContext('2d').putImageData(cellsToImageData(cellsRef.current, width, height), 0, 0)
+    bufRef.current = buf
+  }, [])
 
   // -- setup ---------------------------------------------------------------
 
@@ -122,19 +174,23 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
     if (!open || !source) return
     // Copied, so Cancel really does discard: the caller keeps the grid it handed in.
     cellsRef.current = new Uint8Array(source.cells)
+    docRef.current = {
+      width: source.width,
+      height: source.height,
+      origin: source.origin,
+      resolution: source.resolution,
+    }
+    savedRef.current = { name: source.name ?? null, width: source.width, height: source.height,
+      origin: source.origin }
+    setDoc(docRef.current)
+    setCropBox(null)
     undoRef.current = []
     setUndoDepth(0)
     setDirty(false)
     setError(null)
     setMapName(source.name ?? null)
-
-    const buf = document.createElement('canvas')
-    buf.width = source.width
-    buf.height = source.height
-    buf.getContext('2d').putImageData(
-      cellsToImageData(cellsRef.current, source.width, source.height), 0, 0)
-    bufRef.current = buf
-  }, [open, source])
+    rebuildBuffer()
+  }, [open, source, rebuildBuffer, setCropBox])
 
   // The whole reason suspendKeyboard exists: space, B, E, L, R and C are all quadruped teleop
   // keys, and QuadrupedWidget is still mounted behind this modal.
@@ -196,25 +252,25 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
   // Shared by the open-the-editor effect below and the Fit button in the status bar, so the
   // two can never drift apart on what "fit" means.
   const fitToView = useCallback(() => {
-    if (!source) return
+    const d = docRef.current
     const vp = viewportRef.current
-    if (!vp) return
+    if (!d || !vp) return
     const rect = vp.getBoundingClientRect()
-    const scale = Math.min(rect.width / source.width, rect.height / source.height) * 0.95
+    const scale = Math.min(rect.width / d.width, rect.height / d.height) * 0.95
     viewRef.current = {
       scale,
-      x: (rect.width - source.width * scale) / 2,
-      y: (rect.height - source.height * scale) / 2,
+      x: (rect.width - d.width * scale) / 2,
+      y: (rect.height - d.height * scale) / 2,
     }
     setZoom(scale)
     render()
-  }, [source, render])
+  }, [render])
 
   // Fit-to-view once the map and the viewport both exist.
   useEffect(() => {
     if (!open) return
     fitToView()
-  }, [open, fitToView])
+  }, [open, source, fitToView])
 
   // Repaint only the rectangle a stroke touched. On a 4600x3550 map a full putImageData is
   // ~65 MB of copying, which is visible as lag on every brush dab.
@@ -287,6 +343,32 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
       ctx.stroke()
     }
 
+    // The box being dragged, or the one waiting for Apply. Everything outside it is dimmed so
+    // what is left reads as the result.
+    const d = docRef.current
+    const box = tool === 'crop' && d
+      ? (start && last ? boxFrom(start, last, d.width, d.height) : cropBoxRef.current)
+      : null
+    if (box) {
+      const [bx, by] = toScreen(box.x, box.y)
+      const bw = box.w * scale
+      const bh = box.h * scale
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'
+      ctx.fillRect(0, 0, overlay.width, overlay.height)
+      ctx.clearRect(bx, by, bw, bh)
+      ctx.strokeRect(bx, by, bw, bh)
+
+      const label = boxLabel(box, d.resolution)
+      ctx.setLineDash([])
+      ctx.font = '11px monospace'
+      ctx.textBaseline = 'middle'
+      const ly = by > 24 ? by - 22 : by + 4
+      ctx.fillStyle = 'rgba(15, 10, 25, 0.85)'
+      ctx.fillRect(bx, ly, ctx.measureText(label).width + 12, 18)
+      ctx.fillStyle = '#FFFFFF'
+      ctx.fillText(label, bx + 6, ly + 9)
+    }
+
     // Brush outline, so the operator can see what a dab will cover before committing to it.
     const cur = cursorRef.current
     if (cur && (tool === 'pencil' || tool === 'eraser')) {
@@ -310,12 +392,41 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
     setDirty(true)
   }, [])
 
+  // Swap in a whole document -- a crop, or the undo of one -- and show it fitted.
+  const replaceDoc = useCallback((cells, width, height, origin) => {
+    cellsRef.current = cells
+    docRef.current = { ...docRef.current, width, height, origin }
+    setDoc(docRef.current)
+    setCropBox(null)
+    rebuildBuffer()
+    fitToView()
+  }, [rebuildBuffer, fitToView, setCropBox])
+
+  // Undo is LIFO, so a stroke patch recorded before a crop -- indexed against the larger map --
+  // is only ever replayed after the crop entry above it has put that size back.
   const undo = useCallback(() => {
     const patch = undoRef.current.pop()
     if (!patch) return
     setUndoDepth(undoRef.current.length)
-    blitDirty(applyUndo(cellsRef.current, patch))
-  }, [blitDirty])
+    if (patch.crop) {
+      const { cells, width, height, origin } = patch.crop
+      replaceDoc(cells, width, height, origin)
+    } else {
+      blitDirty(applyUndo(cellsRef.current, patch))
+    }
+  }, [blitDirty, replaceDoc])
+
+  const applyCrop = useCallback(() => {
+    const box = cropBoxRef.current
+    const d = docRef.current
+    if (!box || !d || (box.w === d.width && box.h === d.height)) return
+    // The whole pre-crop document, since a crop is not a patch of the map it came from.
+    pushUndo({ crop: { cells: cellsRef.current, width: d.width, height: d.height, origin: d.origin } })
+    replaceDoc(
+      cropCells(cellsRef.current, d.width, box.x, box.y, box.w, box.h),
+      box.w, box.h,
+      cropOrigin(d.origin, d.resolution, d.height, box.x, box.y, box.h))
+  }, [pushUndo, replaceDoc])
 
   const isPanning = tool === 'hand' || spaceHeld
 
@@ -332,11 +443,12 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
     startPtRef.current = p
     lastPtRef.current = p
 
-    if (SHAPE_TOOLS.has(tool)) {
+    if (tool === 'crop') setCropBox(null)   // a new drag replaces the waiting box
+    if (SHAPE_TOOLS.has(tool) || tool === 'crop') {
       drawOverlay()   // committed on pointer up, previewed until then
       return
     }
-    const stroke = beginStroke(cellsRef.current, source.width, source.height)
+    const stroke = beginStroke(cellsRef.current, docRef.current.width, docRef.current.height)
     strokeRef.current = stroke
     stampBrush(stroke, p.x, p.y, brush, activeValue)
     blitDirty(stroke.dirty)
@@ -371,7 +483,7 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
       return
     }
 
-    if (startPtRef.current && SHAPE_TOOLS.has(tool)) lastPtRef.current = p
+    if (startPtRef.current && (SHAPE_TOOLS.has(tool) || tool === 'crop')) lastPtRef.current = p
     drawOverlay()
   }
 
@@ -389,8 +501,13 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
     if (strokeRef.current) {
       pushUndo(strokeRef.current.commit())
       strokeRef.current = null
+    } else if (start && end && tool === 'crop') {
+      // Kept for Apply rather than cropped on release. A click, or a box a cell thin, clears it.
+      const d = docRef.current
+      const box = boxFrom(start, end, d.width, d.height)
+      setCropBox(box.w > 1 && box.h > 1 ? box : null)
     } else if (start && end && SHAPE_TOOLS.has(tool)) {
-      const stroke = beginStroke(cellsRef.current, source.width, source.height)
+      const stroke = beginStroke(cellsRef.current, docRef.current.width, docRef.current.height)
       if (tool === 'line') {
         drawLine(stroke, start.x, start.y, end.x, end.y, brush, activeValue)
       } else if (tool === 'rect') {
@@ -459,6 +576,16 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
         undo()
         return
       }
+      if (cropBoxRef.current && (e.code === 'Enter' || e.code === 'NumpadEnter')) {
+        e.preventDefault()
+        applyCrop()
+        return
+      }
+      if (cropBoxRef.current && e.code === 'Escape') {
+        setCropBox(null)
+        drawOverlay()
+        return
+      }
       if (e.code === 'BracketLeft') {
         setBrush((b) => Math.max(MIN_BRUSH, b - Math.max(1, Math.round(b * 0.2))))
         return
@@ -476,22 +603,28 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
       window.removeEventListener('keydown', onDown)
       window.removeEventListener('keyup', onUp)
     }
-  }, [open, undo])
+  }, [open, undo, applyCrop, setCropBox, drawOverlay])
 
-  useEffect(() => { drawOverlay() }, [drawOverlay])
+  // A waiting crop box belongs to the crop tool; any other tool drops it.
+  useEffect(() => { if (tool !== 'crop') setCropBox(null) }, [tool, setCropBox])
+
+  useEffect(() => { drawOverlay() }, [drawOverlay, cropBox])
 
   // -- save ----------------------------------------------------------------
 
   async function writeMap(name) {
     setBusy(true)
     setError(null)
+    setConfirmReplace(null)
     try {
-      const blob = await cellsToPngBlob(cellsRef.current, source.width, source.height)
+      const { width, height, origin } = docRef.current
+      const blob = await cellsToPngBlob(cellsRef.current, width, height)
       await onSave(name, blob, {
         resolution: source.resolution,
-        origin: source.origin,
+        origin,
         pcdName: source.pcdName ?? null,
       })
+      savedRef.current = { name, width, height, origin }
       setMapName(name)      // a saved-as map becomes the Save target from here on
       setDirty(false)
       setNamePrompt(null)
@@ -502,10 +635,25 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
     }
   }
 
+  // Writing a cropped map back under the name it was opened (or last saved) as replaces that
+  // map with the smaller area, so that one is confirmed. Any other write goes straight through.
+  function requestWrite(name) {
+    const s = savedRef.current
+    const d = docRef.current
+    const replacesWithCrop = s && name === s.name && (s.width !== d.width || s.height !== d.height
+      || s.origin[0] !== d.origin[0] || s.origin[1] !== d.origin[1])
+    if (replacesWithCrop) setConfirmReplace(name)
+    else writeMap(name)
+  }
+
   if (!open || !source) return null
 
+  // Rendered before the setup effect has filled `doc` -- the canvases must exist for the
+  // sizing and fit effects -- so the source stands in for that first frame.
+  const shown = doc ?? source
   const nameValid = namePrompt != null && MAP_NAME_RE.test(namePrompt.value)
-  const megapixels = (source.width * source.height) / 1e6
+  const megapixels = (shown.width * shown.height) / 1e6
+  const cropIsWhole = cropBox && cropBox.w === shown.width && cropBox.h === shown.height
 
   return (
     <div
@@ -519,7 +667,9 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
       <div className="panel-header" style={{ background: 'var(--panel-bg)', padding: '10px 14px' }}>
         <span style={{ color: 'var(--text-h)' }}>Map Editor — {mapName ?? 'unsaved'}</span>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)' }}>
-          {source.width} × {source.height} px · {source.resolution} m/px · {megapixels.toFixed(1)} MP
+          {shown.width} × {shown.height} px · {source.resolution} m/px
+          {' '}· origin ({shown.origin[0].toFixed(2)}, {shown.origin[1].toFixed(2)})
+          {' '}· {megapixels.toFixed(1)} MP
           {dirty && <span style={{ color: '#F59E0B' }}> · unsaved changes</span>}
         </span>
       </div>
@@ -533,11 +683,17 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
           background: 'var(--panel-bg)', borderBottom: '1px solid var(--border)',
         }}
       >
-        <div className="flex items-center" style={{ gap: 6, opacity: tool === 'eraser' ? 0.45 : 1 }}>
+        <div
+          className="flex items-center"
+          style={{ gap: 6, opacity: tool === 'eraser' || tool === 'crop' ? 0.45 : 1 }}
+        >
           {PALETTE.map(({ value, label, swatch }) => (
             <button
               key={value}
-              onClick={() => { setColour(value); if (tool === 'eraser') setTool('pencil') }}
+              onClick={() => {
+                setColour(value)
+                if (tool === 'eraser' || tool === 'crop') setTool('pencil')
+              }}
               title={label}
               aria-label={label}
               aria-pressed={colour === value && tool !== 'eraser'}
@@ -564,7 +720,7 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
 
         <div
           className="flex items-center"
-          style={{ gap: 8, opacity: tool === 'hand' ? 0.45 : 1 }}
+          style={{ gap: 8, opacity: tool === 'hand' || tool === 'crop' ? 0.45 : 1 }}
         >
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
@@ -575,7 +731,7 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
           <input
             type="range" min={MIN_BRUSH} max={MAX_BRUSH} value={brush}
             onChange={(e) => setBrush(Number(e.target.value))}
-            disabled={tool === 'hand'}
+            disabled={tool === 'hand' || tool === 'crop'}
             style={{ width: 130, accentColor: 'var(--accent-bright)' }}
           />
           <span className="val-mono" style={{ width: 46, textAlign: 'right' }}>{brush} px</span>
@@ -592,6 +748,36 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
               />
               Fill
             </label>
+          </>
+        )}
+
+        {tool === 'crop' && (
+          <>
+            <Divider />
+            {cropBox ? (
+              <div className="flex items-center" style={{ gap: 8 }}>
+                <span className="val-mono">{boxLabel(cropBox, source.resolution)}</span>
+                <button
+                  className="btn-icon" style={{ height: 26, borderColor: 'var(--accent-bright)' }}
+                  onClick={applyCrop}
+                  disabled={cropIsWhole}
+                  title={cropIsWhole ? 'The box covers the whole map' : 'Keep only the box (Enter)'}
+                >
+                  Apply ✓
+                </button>
+                <button
+                  className="btn-icon" style={{ height: 26 }}
+                  onClick={() => setCropBox(null)}
+                  title="Drop the box (Esc)"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                Drag a box around the area to keep
+              </span>
+            )}
           </>
         )}
 
@@ -618,8 +804,8 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
         >
           {TOOLS.map(({ key, label, hotkey }, i) => (
             <Fragment key={key}>
-              {/* Navigation above the rule, painting below it. */}
-              {i === 1 && (
+              {/* Pan and crop above the rule, painting below it. */}
+              {i === PAINT_RULE_INDEX && (
                 <div style={{
                   width: 28, height: 1, background: 'var(--border)', margin: '4px 0', flexShrink: 0,
                 }} />
@@ -727,7 +913,7 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
           </button>
           <button
             className="btn-icon px-4 py-1.5 text-xs"
-            onClick={() => writeMap(mapName)}
+            onClick={() => requestWrite(mapName)}
             disabled={busy || !mapName}
             title={mapName ? undefined : 'This map has no name yet — use Save as'}
           >
@@ -760,8 +946,41 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
           overwrites={nameValid && namePrompt.value !== mapName &&
             existingNames.includes(namePrompt.value)}
           busy={busy}
-          onConfirm={() => writeMap(namePrompt.value)}
+          onConfirm={() => requestWrite(namePrompt.value)}
         />
+      )}
+
+      {confirmReplace && (
+        <Scrim>
+          <Card title={`Replace ${confirmReplace} with the cropped area?`}>
+            <div style={{ fontSize: 13, color: 'var(--text)' }}>
+              {confirmReplace} is {savedRef.current.width} × {savedRef.current.height} px; saving
+              replaces it with this {shown.width} × {shown.height} px area, and the rest is lost from{' '}
+              {confirmReplace}.png. Use Save as to keep both.
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+              A robot with {confirmReplace} loaded keeps the old one until it loads it again.
+            </div>
+            <div className="flex gap-3 justify-end mt-1">
+              <button
+                className="btn-icon px-4 py-1.5 text-xs"
+                onClick={() => setConfirmReplace(null)}
+                disabled={busy}
+                autoFocus
+              >
+                Keep editing
+              </button>
+              <button
+                className="btn-icon px-4 py-1.5 text-xs"
+                style={{ borderColor: '#DC2626', color: '#DC2626' }}
+                onClick={() => writeMap(confirmReplace)}
+                disabled={busy}
+              >
+                {busy ? 'Saving…' : 'Replace ▶'}
+              </button>
+            </div>
+          </Card>
+        </Scrim>
       )}
 
       {confirmCancel && (

@@ -100,6 +100,29 @@ export function imageToCells(image) {
   return { cells, width, height }
 }
 
+/** The w x h block whose top-left cell is (x, y), as new cells. Image orientation in and out. */
+export function cropCells(cells, width, x, y, w, h) {
+  const out = new Uint8Array(w * h)
+  for (let row = 0; row < h; row++) {
+    const src = (y + row) * width + x
+    out.set(cells.subarray(src, src + w), row * w)
+  }
+  return out
+}
+
+/**
+ * Origin of that block. `origin` is the BOTTOM-left corner while (x, y) counts from the top
+ * (see THE FLIP above): the corner moves right by the columns cut off the left, and up by the
+ * rows cut off the bottom -- height - y - h of them, not y.
+ */
+export function cropOrigin(origin, resolution, height, x, y, h) {
+  return [
+    origin[0] + x * resolution,
+    origin[1] + (height - y - h) * resolution,
+    origin[2] ?? 0,
+  ]
+}
+
 /** cells -> PNG Blob, via a detached canvas. */
 export function cellsToPngBlob(cells, width, height) {
   const canvas = document.createElement('canvas')
