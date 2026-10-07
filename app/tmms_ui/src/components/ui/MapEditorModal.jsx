@@ -6,7 +6,7 @@ import {
 import {
   applyUndo, beginStroke, drawCircle, drawLine, drawRect, stampBrush,
 } from '../../lib/raster'
-import { todayPrefix } from '../../lib/dates'
+import { defaultMapName } from '../../lib/dates'
 
 // A flattened lidar map always has junk in it — someone who walked through the scan, a parked
 // pallet, a doorway the beam clipped through — and nav2 plans around or into every one. This
@@ -102,7 +102,7 @@ function boxLabel(box, resolution) {
 /**
  * props:
  *   open        bool
- *   source        { cells, width, height, resolution, origin, pcdName, name|null }
+ *   source        { cells, width, height, resolution, origin, pcdName, name|null, pois? }
  *                 `name` null in create mode, which is what disables Save.
  *   existingNames string[]  2D maps already on disk, for the overwrite warning
  *   onSave        (name, blob, meta) => Promise   resolves when written
@@ -623,6 +623,9 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
         resolution: source.resolution,
         origin,
         pcdName: source.pcdName ?? null,
+        // Where POIs and their snapshots come from when the 3D map's own POI file is gone.
+        pois: source.pois ?? null,
+        sourceName: source.name ?? null,
       })
       savedRef.current = { name, width, height, origin }
       setMapName(name)      // a saved-as map becomes the Save target from here on
@@ -928,7 +931,7 @@ export function MapEditorModal({ open, source, existingNames = [], onSave, onClo
             }}
             // Only a brand-new map gets the date seed; re-saving an existing one keeps its
             // own name so the operator does not accidentally fork it under a new date.
-            onClick={() => setNamePrompt({ value: mapName ?? todayPrefix() })}
+            onClick={() => setNamePrompt({ value: mapName ?? defaultMapName(source.pcdName) })}
             disabled={busy}
           >
             Save as ▶

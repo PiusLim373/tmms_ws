@@ -1,0 +1,7 @@
+---
+bool success
+string message
+string map_name   # the mapping session the pose belongs to
+float64 x         # m, base_footprint in camera_init
+float64 y         # m
+float64 yaw       # deg

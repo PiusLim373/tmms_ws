@@ -77,8 +77,9 @@ function decodeRosImage(msg, canvas, onSize) {
   canvas.getContext('2d').putImageData(imageData, 0, 0)
 }
 
-// Shared hook — re-used by ThirdPersonWidget through CameraWidget.
-export function useCameraFeed(topicName) {
+// Shared hook — re-used by ThirdPersonWidget through CameraWidget. `frameRef`, if given,
+// always holds the newest message, so a caller can save the exact frame on screen.
+export function useCameraFeed(topicName, frameRef) {
   const canvasRef     = useRef(null)
   const pendingRef    = useRef(null)
   const rafRef        = useRef(null)
@@ -108,6 +109,7 @@ export function useCameraFeed(topicName) {
   useEffect(() => {
     const unsub = subscribeCamera(topicName, (msg) => {
       pendingRef.current = msg
+      if (frameRef) frameRef.current = msg
       setActive(true)
       if (!rafRef.current) {
         rafRef.current = requestAnimationFrame(drawPending)
@@ -117,7 +119,7 @@ export function useCameraFeed(topicName) {
       unsub()
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
-  }, [topicName, drawPending])
+  }, [topicName, drawPending, frameRef])
 
   return { canvasRef, active, fps, frameSize }
 }
@@ -140,8 +142,12 @@ function NoSignal({ topicName }) {
 
 // `footer` is an optional bar below the image — ThirdPersonWidget puts its pan/tilt controls
 // there rather than over the canvas, which is what keeps them clear of drag-to-pan.
-export function CameraWidget({ topicName, title, footer, className = '' }) {
-  const { canvasRef, active, fps, frameSize } = useCameraFeed(topicName)
+// `headerExtra` sits at the start of the header's right side; `onActiveChange` reports signal.
+export function CameraWidget({
+  topicName, title, footer, className = '', frameRef, headerExtra, onActiveChange,
+}) {
+  const { canvasRef, active, fps, frameSize } = useCameraFeed(topicName, frameRef)
+  useEffect(() => { onActiveChange?.(active) }, [active, onActiveChange])
   const { viewportRef, atFit, reset, handlers } = useCameraView(canvasRef, frameSize)
 
   return (
@@ -152,6 +158,7 @@ export function CameraWidget({ topicName, title, footer, className = '' }) {
       <div className="panel-header">
         <span>{title}</span>
         <div className="flex items-center gap-2">
+          {headerExtra}
           {active && (
             <span style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)', fontSize: 10 }}>
               {fps} fps

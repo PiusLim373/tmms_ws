@@ -71,7 +71,10 @@ export function ConfirmSendModal({
                       color: isLast ? 'var(--text-h)' : 'var(--text)',
                     }}
                   >
-                    <td style={{ padding: '4px 0' }}>{i + 1}</td>
+                    <td style={{ padding: '4px 0' }}>
+                      {i + 1}
+                      {w.label && <span style={{ marginLeft: 6, color: '#3B82F6' }}>{w.label}</span>}
+                    </td>
                     <td>{w.x.toFixed(2)}</td>
                     <td>{w.y.toFixed(2)}</td>
                     <td>

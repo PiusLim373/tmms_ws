@@ -8,6 +8,9 @@ on demand instead, one session at a time, and tears it down again on request.
     ros2 service call /mapping_manager/start_mapping tmms_msgs/srv/StringTrigger "{data: my_map}"
     ros2 service call /mapping_manager/stop_mapping  std_srvs/srv/Trigger
 
+/poi_pose (tmms_msgs/POIPoseTrigger) returns the robot's base_footprint pose in the live
+session's camera_init, which is the frame of the map being built -- see POINTS OF INTEREST.
+
 start_mapping spawns
 `ros2 launch tmms_master fast_lio.launch.py map_file_path:=<maps_dir>/pcd/<name>.pcd`.
 The path has to be passed at spawn time, not set afterwards: laserMapping.cpp reads
@@ -52,10 +55,23 @@ session start is the pose of camera_init, and the resulting tree is:
 This replaces the identity map->camera_init / map->odom statics fast_lio.launch.py used to
 publish, which were only ever correct when odom happened to be zero; at any other odom pose
 the map and the robot model were displaced by exactly that pose.
+
+POINTS OF INTEREST
+------------------
+The map_flattener applies no transform, so camera_init coordinates are the coordinates of every
+2D map cut from this session. /poi_pose takes FAST-LIO's camera_init -> body from the latest
+/Odometry, never a path through odom (leg odometry, which drifts off the map). body is
+dog_imu_link, so the footprint is that pose composed with dog_imu_link -> base_footprint from
+the robot's TF.
+
+Liveness is when /Odometry last ARRIVED here, not its stamp: the stamp is the lidar PC's
+clock, and comparing it against this one would refuse every pose whenever the two drift.
 """
 
+import math
 import os
 import re
+import time
 import signal
 import subprocess
 import threading
@@ -68,11 +84,13 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from rclpy.time import Time
 
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import Pose, TransformStamped
+from nav_msgs.msg import Odometry
 from std_srvs.srv import Trigger
 from tf2_msgs.msg import TFMessage
-from tmms_msgs.srv import StringTrigger
+from tmms_msgs.srv import POIPoseTrigger, StringTrigger
 
+from tf2_geometry_msgs import do_transform_pose
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
@@ -94,6 +112,9 @@ class MappingManagerNode(Node):
         self.declare_parameter('parent_frame', 'odom')
         self.declare_parameter('imu_frame', 'dog_imu_link')
         self.declare_parameter('child_frame', 'camera_init')
+        self.declare_parameter('base_frame', 'base_footprint')
+        self.declare_parameter('odom_topic', '/Odometry')
+        self.declare_parameter('poi_pose_max_age_sec', 1.0)
         self.declare_parameter('tf_lookup_timeout_sec', 5.0)
         # Widened for large maps -- too short a timeout here made the map look lost when it was
         # really still writing (see stopMapping's matching timeout in rosbridge.js).
@@ -105,6 +126,8 @@ class MappingManagerNode(Node):
         self._proc = None
         self._map_name = None
         self._pcd_path = None
+        # (latest /Odometry, monotonic time it arrived), replaced as one tuple.
+        self._odom = None
 
         # The two servers share one mutually-exclusive group so start and stop can never
         # interleave. The /map_save client, the reaper and the TF listener sit outside it,
@@ -142,6 +165,12 @@ class MappingManagerNode(Node):
             StringTrigger, '~/start_mapping', self._start_cb, callback_group=self._srv_group)
         self.create_service(
             Trigger, '~/stop_mapping', self._stop_cb, callback_group=self._srv_group)
+
+        self.create_subscription(
+            Odometry, self._param('odom_topic'), self._odom_cb, 1,
+            callback_group=self._aux_group)
+        self.create_service(
+            POIPoseTrigger, '/poi_pose', self._poi_pose_cb, callback_group=self._aux_group)
 
         # Notice a launch that died on its own (crash, or someone killing it by hand) so we
         # do not keep reporting a dead session as active.
@@ -200,6 +229,33 @@ class MappingManagerNode(Node):
         self.get_logger().info(
             f'anchored {anchor.header.frame_id} -> {anchor.child_frame_id} at '
             f'xyz=[{t.x:.3f}, {t.y:.3f}, {t.z:.3f}]')
+
+    def _odom_cb(self, msg):
+        self._odom = (msg, time.monotonic())
+
+    def _robot_pose(self, odom):
+        """(x, y, yaw_rad) of base_frame in child_frame, from FAST-LIO's camera_init -> body
+        in `odom`. Raises TransformException."""
+        slam = TransformStamped()
+        slam.header = odom.header
+        slam.child_frame_id = odom.child_frame_id
+        slam.transform.translation.x = odom.pose.pose.position.x
+        slam.transform.translation.y = odom.pose.pose.position.y
+        slam.transform.translation.z = odom.pose.pose.position.z
+        slam.transform.rotation = odom.pose.pose.orientation
+        offset = self._buffer.lookup_transform(
+            self._param('imu_frame'), self._param('base_frame'), Time())
+
+        base = Pose()
+        base.position.x = offset.transform.translation.x
+        base.position.y = offset.transform.translation.y
+        base.position.z = offset.transform.translation.z
+        base.orientation = offset.transform.rotation
+        pose = do_transform_pose(base, slam)
+
+        q = pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        return pose.position.x, pose.position.y, yaw
 
     def _call_map_save(self):
         """Returns (ok, message). Blocks until the .pcd is written or the timeout expires."""
@@ -260,6 +316,42 @@ class MappingManagerNode(Node):
                 self._terminate_child()
 
     # -- services --------------------------------------------------------------
+
+    def _poi_pose_cb(self, _request, response):
+        response.success = False
+        # Non-blocking: start/stop hold the lock for as long as a map save takes.
+        if not self._lock.acquire(blocking=False):
+            response.message = 'the mapping session is starting or stopping'
+            return response
+        try:
+            alive = self._child_alive()
+            map_name = self._map_name
+        finally:
+            self._lock.release()
+        if not alive:
+            response.message = 'no active mapping session'
+            return response
+
+        odom = self._odom
+        max_age = float(self._param('poi_pose_max_age_sec'))
+        if odom is None or time.monotonic() - odom[1] > max_age:
+            response.message = (
+                f'no {self._param("odom_topic")} in the last {max_age:.1f}s; is FAST-LIO running?')
+            return response
+
+        try:
+            x, y, yaw = self._robot_pose(odom[0])
+        except TransformException as exc:
+            response.message = f'could not look up the robot pose: {exc}'
+            return response
+
+        response.success = True
+        response.map_name = map_name
+        response.x = x
+        response.y = y
+        response.yaw = math.degrees(yaw)
+        response.message = f'{map_name}: x={x:.3f} y={y:.3f} yaw={response.yaw:.1f} deg'
+        return response
 
     def _start_cb(self, request, response):
         name = (request.data or '').strip()
@@ -353,9 +445,9 @@ class MappingManagerNode(Node):
 def main():
     rclpy.init()
     node = MappingManagerNode()
-    # 4 threads: the service group, the /map_save response, the reaper, and /tf delivery --
-    # stop_mapping blocks on two of these at once.
-    executor = MultiThreadedExecutor(num_threads=4)
+    # 5 threads: the service group, the /map_save response, the reaper, /tf delivery and
+    # /poi_pose with its /Odometry watch -- stop_mapping blocks on two of these at once.
+    executor = MultiThreadedExecutor(num_threads=5)
     executor.add_node(node)
     try:
         executor.spin()

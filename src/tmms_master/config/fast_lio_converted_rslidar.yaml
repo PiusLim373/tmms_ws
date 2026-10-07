@@ -68,8 +68,8 @@
         publish:
             path_en:  true
             effect_map_en: false
-            map_en: true                  # REQUIRED for /map_save: publish_map() is the only
-                                          # thing that fills pcl_wait_pub
+            map_en: true                  # REQUIRED for /map_save: it gates the map
+                                          # accumulation (append_map_chunk) that it writes
             scan_publish_en:  true
             dense_publish_en: true       # publish_map() republishes the WHOLE accumulated
                                           # map at 1 Hz; dense -> >100 MB msgs on the full bag

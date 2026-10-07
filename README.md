@@ -289,6 +289,8 @@ How a C2 (fleet manager) drives the robot's navigation:
 2. [Send a navplan](#2-send-a-navplan): a list of waypoints the robot drives through in order
 3. [Cancel or replace](#3-cancel-or-replace-a-navplan) it if needed
 
+A map can also carry [points of interest](#points-of-interest) marked while it was being mapped, ready to use as waypoints.
+
 Everything goes through rosbridge. Each step shows the `ros2` CLI form, for testing on the robot, and the rosbridge message C2 sends. Every outcome is read from one topic, [`/quadruped_main_status`](#robot-status).
 
 The robot also accepts an older two-step flow, `/map_load` followed by a pose on the `/lichtblick_initialpose` topic, which Lichtblick's Navigation tab uses. C2 doesn't need it.
@@ -512,3 +514,30 @@ A new navplan never replaces a running one; it is refused. To replace one:
 1. Call `/cancel_goal`.
 2. Wait until `navigation_state` is `idle`, `canceled` or `navigation_failed`. Don't wait for `canceled` alone: the plan may finish or fail at the same moment and land in `idle` or `navigation_failed` instead. If it lands in `unlocalized` or `error`, deal with that first.
 3. Send the new navplan.
+
+### Points of interest
+
+Points of interest (POIs) are places the operator marked while mapping, each with a name, a description and camera snapshots. Every 2D map made from that mapping session lists them in its yaml. A POI's `x`, `y` are in the map's own frame, so one can be sent as a navplan waypoint as it is.
+
+They are in the map's yaml, `~/.htxgrrt/maps/png/<name>.yaml`, one POI per line:
+
+```yaml
+points_of_interest:
+  - {"id": 1, "name": "Valve A", "x": 12.345, "y": -3.21, "yaw": 90.0, "timestamp": "2026-10-06T15:22:31+08:00", "snapshots": ["1_topdown.jpg", "1_wrist.jpg"], "description": "Unknown liquid spotted underneath structure"}
+```
+
+The UI backend (port 3001) returns the same list as `pois` from `GET /api/maps2d` and `GET /api/maps2d/<name>/meta`.
+
+| Field | Notes |
+|---|---|
+| `id` | Unique within the map; never reused, so it is safe as a key. |
+| `name` | The operator's label. Names can repeat. |
+| `x`, `y` | Metres, `map` frame. |
+| `yaw` | **Degrees**, counter-clockwise from map +X. A navplan waypoint needs a quaternion: `z = sin(yaw/2)`, `w = cos(yaw/2)` with `yaw` in radians. |
+| `timestamp` | When the pose was captured, ISO 8601 with offset. |
+| `snapshots` | Image files, `<id>_<camera>.jpg` with camera `topdown`, `wrist` or `thirdperson`. Any of them may be missing. |
+| `description` | Free text, may contain newlines. |
+
+- A cropped map keeps all of its POIs, including ones now outside the image.
+- Each line is a JSON object, which is also valid YAML: a yaml library reads the whole block, and `JSON.parse` reads one line after its `- `.
+- Snapshots are served at `GET /api/maps2d/<name>/snapshots/<file>`, with CORS open like the rest of `/api/maps2d`. The map's zip, `GET /api/maps2d/<name>/download`, includes them in `<name>_snapshots/`.

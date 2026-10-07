@@ -31,9 +31,12 @@ const BAG_FILENAME_RE = /^[\w.-]+\.mcap$/
 
 // MAPS_DIR is the ROOT of the map store, holding one subfolder per representation of a map:
 //
-//   <MAPS_DIR>/pcd/<name>.pcd    3D cloud, written by FAST-LIO's /map_save
-//   <MAPS_DIR>/png/<name>.png    2D grid, written by the map editor in this UI
-//   <MAPS_DIR>/png/<name>.yaml   its metadata, carrying a pcd_file key back to the .pcd
+//   <MAPS_DIR>/pcd/<name>.pcd              3D cloud, written by FAST-LIO's /map_save
+//   <MAPS_DIR>/poi/<name>_poi.yaml         points of interest captured while mapping it
+//   <MAPS_DIR>/poi/<name>_snapshots/       their camera snapshots
+//   <MAPS_DIR>/png/<name>.png              2D grid, written by the map editor in this UI
+//   <MAPS_DIR>/png/<name>.yaml             its metadata, carrying a pcd_file key back to the .pcd
+//   <MAPS_DIR>/png/<name>_snapshots/       hard links to the snapshots of its POIs
 //
 // Every ROS node takes the same root and derives its own subfolder, so this env var stays
 // pointed at the root and the layout is agreed in exactly one place.
@@ -41,8 +44,10 @@ const MAPS_DIR = process.env.TMMS_MAPS_DIR
   || path.join(os.homedir(), '.htxgrrt', 'maps')
 const PCD_DIR = path.join(MAPS_DIR, 'pcd')
 const PNG_DIR = path.join(MAPS_DIR, 'png')
+const POI_DIR = path.join(MAPS_DIR, 'poi')
 fs.mkdirSync(PCD_DIR, { recursive: true })
 fs.mkdirSync(PNG_DIR, { recursive: true })
+fs.mkdirSync(POI_DIR, { recursive: true })
 
 // Maps are FAST-LIO point clouds written by /map_save, one .pcd per session. Anchored,
 // with no dot/slash/dash possible — this regex is the whole path-traversal defense for the
@@ -86,12 +91,13 @@ const mapsUpload = multer({
 // flat scalar map plus one inline array, which is not worth that.
 //
 // Handles what map_server writes and what we write: `key: value`, quoted or bare scalars,
-// `origin: [x, y, yaw]`, and # comments. Anything else is returned as a raw string.
+// `origin: [x, y, yaw]`, and # comments. Anything else is returned as a raw string. List items
+// are skipped here; the only ones we write are POIs, which parsePois reads.
 function parseMapYaml(text) {
   const out = {}
   for (const rawLine of text.split('\n')) {
     const line = rawLine.replace(/\s+#.*$/, '').trim()
-    if (!line || line.startsWith('#')) continue
+    if (!line || line.startsWith('#') || line.startsWith('-')) continue
     const sep = line.indexOf(':')
     if (sep < 0) continue
     const key = line.slice(0, sep).trim()
@@ -117,7 +123,7 @@ function parseMapYaml(text) {
 // yaml pointed somewhere else. pcd_file is an absolute path — the ROS containers and this one
 // both mount the store at the same place, and an absolute path survives the file being copied
 // somewhere the relative one would not resolve from.
-function writeMapYaml({ name, resolution, origin, pcdFile }) {
+function writeMapYaml({ name, resolution, origin, pcdFile, pois }) {
   const [ox, oy, oyaw] = origin
   const lines = [
     `image: ${name}.png`,
@@ -133,7 +139,134 @@ function writeMapYaml({ name, resolution, origin, pcdFile }) {
     lines.push('# 3D cloud this grid was flattened from.')
     lines.push(`pcd_file: ${pcdFile}`)
   }
+  if (pois?.length) {
+    lines.push('')
+    lines.push('# Points of interest captured while mapping. x, y [m] and yaw [DEG] in this map\'s')
+    lines.push(`# frame; all are kept, even outside the image. Snapshots: ${name}_snapshots/<file>.`)
+    lines.push('points_of_interest:')
+    lines.push(...pois.map(poiLine))
+  }
   return lines.join('\n') + '\n'
+}
+
+// ---------------------------------------------------------------------------
+// Points of interest
+//
+// Captured during a mapping session and keyed by its 3D map. x, y are metres and yaw is
+// DEGREES, base_footprint in that session's camera_init -- the frame of every 2D map cut from
+// it, so they are copied into a 2D map's yaml unchanged. Each POI is one line of JSON, which
+// is valid YAML for map_server and any yaml library, and is read back here with JSON.parse.
+
+const SNAPSHOT_CAMS = ['topdown', 'wrist', 'thirdperson']
+const SNAPSHOT_FILE_RE = /^\d+_(topdown|wrist|thirdperson)\.(jpg|png)$/
+const SNAPSHOT_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png' }
+
+const poiYamlPath = (map) => path.join(POI_DIR, `${map}_poi.yaml`)
+const poiSnapDir = (map) => path.join(POI_DIR, `${map}_snapshots`)
+const map2dSnapDir = (name) => path.join(PNG_DIR, `${name}_snapshots`)
+
+// ": " and ", " rather than JSON.stringify's bare separators: YAML 1.1 parsers (PyYAML) need
+// the space after a colon.
+function poiLine(p) {
+  const fields = {
+    id: p.id, name: p.name, x: p.x, y: p.y, yaw: p.yaw,
+    timestamp: p.timestamp, snapshots: p.snapshots, description: p.description,
+  }
+  const body = Object.entries(fields)
+    .map(([k, v]) => `${JSON.stringify(k)}: ${JSON.stringify(v)}`)
+    .join(', ')
+  return `  - {${body}}`
+}
+
+// Null for anything that is not a well-formed POI, so a hand-edited file cannot put NaN
+// coordinates or a path-like snapshot name in front of the UI.
+function normalisePoi(p) {
+  if (!p || !Number.isInteger(p.id) || p.id < 1) return null
+  if (![p.x, p.y, p.yaw].every(Number.isFinite)) return null
+  return {
+    id: p.id,
+    name: typeof p.name === 'string' && p.name.trim() ? p.name.trim() : `POI_${p.id}`,
+    x: p.x,
+    y: p.y,
+    yaw: p.yaw,
+    timestamp: typeof p.timestamp === 'string' ? p.timestamp : '',
+    snapshots: Array.isArray(p.snapshots)
+      ? p.snapshots.filter((f) => typeof f === 'string' && SNAPSHOT_FILE_RE.test(f))
+      : [],
+    description: typeof p.description === 'string' ? p.description : '',
+  }
+}
+
+function parsePois(text) {
+  const out = []
+  for (const line of text.split('\n')) {
+    const m = line.match(/^\s*-\s*(\{.*\})\s*$/)
+    if (!m) continue
+    try {
+      const poi = normalisePoi(JSON.parse(m[1]))
+      if (poi) out.push(poi)
+    } catch {
+      // Not one of ours.
+    }
+  }
+  return out
+}
+
+function readPoiFile(map) {
+  const file = poiYamlPath(map)
+  if (!fs.existsSync(file)) return { nextId: 1, pois: [] }
+  const text = fs.readFileSync(file, 'utf-8')
+  const pois = parsePois(text)
+  const stored = parseMapYaml(text).next_id
+  // Never below the highest id on file, even if next_id was hand-edited down.
+  const nextId = Math.max(Number.isInteger(stored) ? stored : 1, ...pois.map((p) => p.id + 1))
+  return { nextId, pois }
+}
+
+function writeAtomic(file, text) {
+  fs.writeFileSync(`${file}.tmp`, text)
+  fs.renameSync(`${file}.tmp`, file)
+}
+
+// next_id only grows, so a deleted POI's id (and its snapshot filenames) is never reused.
+function writePoiFile(map, { nextId, pois }) {
+  const lines = [
+    `# Points of interest captured while mapping ${map}. x, y [m] and yaw [deg] are`,
+    '# base_footprint in that session\'s camera_init, the frame of every 2D map cut from it.',
+    `map_name: ${map}`,
+    `next_id: ${nextId}`,
+    pois.length ? 'points_of_interest:' : 'points_of_interest: []',
+    ...pois.map(poiLine),
+  ]
+  writeAtomic(poiYamlPath(map), lines.join('\n') + '\n')
+}
+
+function clearPois(map) {
+  fs.rmSync(poiYamlPath(map), { force: true })
+  fs.rmSync(poiSnapDir(map), { recursive: true, force: true })
+}
+
+// Built in a sibling folder and swapped in, so srcDir may be destDir itself (re-saving a map
+// whose 3D source is gone): the new links hold the inodes while the old folder is removed.
+// Hard links cost no space and survive the 3D map being deleted; copy if linking is refused.
+function rebuildSnapshots(pois, srcDir, destDir) {
+  const tmp = `${destDir}.tmp`
+  fs.rmSync(tmp, { recursive: true, force: true })
+  const files = pois.flatMap((p) => p.snapshots)
+  if (srcDir && files.length) {
+    fs.mkdirSync(tmp, { recursive: true })
+    for (const f of files) {
+      const src = path.join(srcDir, f)
+      if (!fs.existsSync(src)) continue
+      try {
+        fs.linkSync(src, path.join(tmp, f))
+      } catch {
+        fs.copyFileSync(src, path.join(tmp, f))
+      }
+    }
+  }
+  fs.rmSync(destDir, { recursive: true, force: true })
+  if (fs.existsSync(tmp)) fs.renameSync(tmp, destDir)
 }
 
 // Dimensions from the PNG header instead of decoding the image: IHDR is the first chunk, so
@@ -341,6 +474,8 @@ app.delete('/api/maps/:filename', (req, res) => {
     return res.status(409).json({ error: 'cannot delete the map being written right now', mapName })
   }
   fs.unlinkSync(targetPath)
+  // Its POIs only have meaning in this cloud's frame. 2D maps cut from it keep their own copy.
+  clearPois(mapName)
   res.json({ filename, deleted: true })
 })
 
@@ -367,8 +502,11 @@ function readMap2d(name) {
   if (!fs.existsSync(pngPath) || !fs.existsSync(yamlPath)) return null
 
   let meta = {}
+  let pois = []
   try {
-    meta = parseMapYaml(fs.readFileSync(yamlPath, 'utf-8'))
+    const text = fs.readFileSync(yamlPath, 'utf-8')
+    meta = parseMapYaml(text)
+    pois = parsePois(text)
   } catch {
     return null
   }
@@ -383,6 +521,7 @@ function readMap2d(name) {
     resolution: typeof meta.resolution === 'number' ? meta.resolution : null,
     origin: Array.isArray(meta.origin) ? meta.origin : null,
     pcdFile: typeof meta.pcd_file === 'string' ? meta.pcd_file : null,
+    pois,
   }
 }
 
@@ -439,7 +578,20 @@ app.get('/api/maps2d/:name/download', (req, res) => {
   archive.pipe(res)
   archive.file(png2dPath(name), { name: `${name}.png` })
   archive.file(yaml2dPath(name), { name: `${name}.yaml` })
+  if (fs.existsSync(map2dSnapDir(name))) {
+    archive.directory(map2dSnapDir(name), `${name}_snapshots`)
+  }
   archive.finalize()
+})
+
+// The 2D map's own copy, so C2 can show what a POI looked like with only the 2D map's name.
+app.get('/api/maps2d/:name/snapshots/:file', (req, res) => {
+  const { name, file } = req.params
+  if (!MAP_NAME_RE.test(name) || !SNAPSHOT_FILE_RE.test(file)) return res.status(400).end()
+  if (!fs.existsSync(path.join(map2dSnapDir(name), file))) {
+    return res.status(404).json({ error: 'snapshot not found', name, file })
+  }
+  res.sendFile(file, { root: map2dSnapDir(name) })
 })
 
 app.post('/api/maps2d', mapsUpload.fields([{ name: 'png', maxCount: 1 }, { name: 'yaml', maxCount: 1 }]),
@@ -475,13 +627,16 @@ app.post('/api/maps2d', mapsUpload.fields([{ name: 'png', maxCount: 1 }, { name:
     const overwritten = fs.existsSync(png2dPath(pngName))
     fs.writeFileSync(png2dPath(pngName), png.buffer)
     // Rewritten rather than stored verbatim, so `image:` names the file we just wrote and the
-    // thresholds match the palette this app produces.
+    // thresholds match the palette this app produces. POIs are kept; their images do not come
+    // with an upload, so any folder left by a map of the same name is dropped.
     fs.writeFileSync(yaml2dPath(pngName), writeMapYaml({
       name: pngName,
       resolution: meta.resolution,
       origin: [meta.origin[0], meta.origin[1], meta.origin[2] ?? 0],
       pcdFile: typeof meta.pcd_file === 'string' ? meta.pcd_file : null,
+      pois: parsePois(yaml.buffer.toString('utf-8')),
     }))
+    fs.rmSync(map2dSnapDir(pngName), { recursive: true, force: true })
     res.json({ name: pngName, overwritten })
   })
 
@@ -508,6 +663,19 @@ app.post('/api/maps2d/:name', mapsUpload.single('png'), (req, res) => {
     return res.status(400).json({ error: 'meta needs a numeric resolution and an origin array' })
   }
 
+  // POIs come from the 3D map's file while it exists, otherwise from the map the editor
+  // opened, so re-saving a map whose 3D source was deleted does not drop them.
+  const pcdName = MAP_NAME_RE.test(meta.pcdName ?? '') ? meta.pcdName : null
+  let pois
+  let snapSrc
+  if (pcdName && fs.existsSync(poiYamlPath(pcdName))) {
+    pois = readPoiFile(pcdName).pois
+    snapSrc = poiSnapDir(pcdName)
+  } else {
+    pois = (Array.isArray(meta.pois) ? meta.pois : []).map(normalisePoi).filter(Boolean)
+    snapSrc = MAP_NAME_RE.test(meta.sourceName ?? '') ? map2dSnapDir(meta.sourceName) : null
+  }
+
   const overwritten = fs.existsSync(png2dPath(name))
   fs.writeFileSync(png2dPath(name), req.file.buffer)
   fs.writeFileSync(yaml2dPath(name), writeMapYaml({
@@ -516,10 +684,10 @@ app.post('/api/maps2d/:name', mapsUpload.single('png'), (req, res) => {
     origin: [meta.origin[0], meta.origin[1], meta.origin[2] ?? 0],
     // Absolute, and built here rather than trusted from the client, so a name is all the
     // browser ever sends and the path can never point outside the store.
-    pcdFile: MAP_NAME_RE.test(meta.pcdName ?? '')
-      ? path.join(PCD_DIR, `${meta.pcdName}.pcd`)
-      : null,
+    pcdFile: pcdName ? path.join(PCD_DIR, `${pcdName}.pcd`) : null,
+    pois,
   }))
+  rebuildSnapshots(pois, snapSrc, map2dSnapDir(name))
   res.json({ name, overwritten })
 })
 
@@ -532,7 +700,133 @@ app.delete('/api/maps2d/:name', (req, res) => {
   // force: true so a half-pair (which the list hides) can still be cleaned up.
   fs.rmSync(png2dPath(name), { force: true })
   fs.rmSync(yaml2dPath(name), { force: true })
+  fs.rmSync(map2dSnapDir(name), { recursive: true, force: true })
   res.json({ name, deleted: true })
+})
+
+// ---------------------------------------------------------------------------
+// Points of interest of a 3D map — <POI_DIR>/<map>_poi.yaml + <map>_snapshots/
+//
+// Read any time; changed only during that map's own mapping session, since a new session of
+// the same name starts a new frame and wipes them. Every handler is synchronous from the
+// first read to the last write, so two requests can never interleave on one file.
+
+const poiUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024, files: SNAPSHOT_CAMS.length },
+})
+
+function poiWritable(map, res) {
+  if (mappingState.mapping && mappingState.mapName === map) return true
+  res.status(409).json({ error: `"${map}" is not being mapped — its POIs can only change during its mapping session` })
+  return false
+}
+
+function poiFields(body) {
+  const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 80) : ''
+  const description = typeof body?.description === 'string' ? body.description.slice(0, 2000) : ''
+  return { name, description }
+}
+
+app.get('/api/poi/:map', (req, res) => {
+  const { map } = req.params
+  if (!MAP_NAME_RE.test(map)) return res.status(400).end()
+  res.json({ mapName: map, ...readPoiFile(map) })
+})
+
+app.post('/api/poi/:map', poiUpload.fields(SNAPSHOT_CAMS.map((name) => ({ name, maxCount: 1 }))),
+  (req, res) => {
+    const { map } = req.params
+    if (!MAP_NAME_RE.test(map)) return res.status(400).end()
+    if (!poiWritable(map, res)) return
+
+    let meta
+    try {
+      meta = JSON.parse(req.body?.meta ?? '')
+    } catch {
+      return res.status(400).json({ error: 'meta must be a JSON object' })
+    }
+    if (![meta.x, meta.y, meta.yaw].every(Number.isFinite)) {
+      return res.status(400).json({ error: 'meta needs numeric x, y and yaw' })
+    }
+    const files = SNAPSHOT_CAMS.map((cam) => [cam, req.files?.[cam]?.[0]]).filter(([, f]) => f)
+    const bad = files.find(([, f]) => !SNAPSHOT_EXT[f.mimetype])
+    if (bad) return res.status(400).json({ error: `${bad[0]} snapshot must be a JPEG or PNG` })
+
+    const { nextId, pois } = readPoiFile(map)
+    const id = nextId
+    const { name, description } = poiFields(meta)
+    fs.mkdirSync(poiSnapDir(map), { recursive: true })
+    const snapshots = files.map(([cam, f]) => {
+      const file = `${id}_${cam}.${SNAPSHOT_EXT[f.mimetype]}`
+      fs.writeFileSync(path.join(poiSnapDir(map), file), f.buffer)
+      return file
+    })
+    // 0.1 mm and 0.01 deg: far below what the pose is good for, and keeps the yaml readable.
+    const round = (v, digits) => Number(v.toFixed(digits))
+    const poi = {
+      id,
+      name: name || `POI_${id}`,
+      x: round(meta.x, 4),
+      y: round(meta.y, 4),
+      yaw: round(meta.yaw, 2),
+      timestamp: typeof meta.timestamp === 'string' ? meta.timestamp : new Date().toISOString(),
+      snapshots,
+      description,
+    }
+    writePoiFile(map, { nextId: id + 1, pois: [...pois, poi] })
+    res.json(poi)
+  })
+
+// Snapshots may only be removed: a retake would no longer match the pose it was saved with.
+app.put('/api/poi/:map/:id', (req, res) => {
+  const { map } = req.params
+  const id = Number(req.params.id)
+  if (!MAP_NAME_RE.test(map) || !Number.isInteger(id)) return res.status(400).end()
+  if (!poiWritable(map, res)) return
+
+  const { nextId, pois } = readPoiFile(map)
+  const poi = pois.find((p) => p.id === id)
+  if (!poi) return res.status(404).json({ error: `POI ${id} not found`, map })
+
+  const keep = Array.isArray(req.body?.snapshots)
+    ? poi.snapshots.filter((f) => req.body.snapshots.includes(f))
+    : poi.snapshots
+  for (const f of poi.snapshots) {
+    if (!keep.includes(f)) fs.rmSync(path.join(poiSnapDir(map), f), { force: true })
+  }
+  const { name, description } = poiFields(req.body)
+  const updated = {
+    ...poi,
+    name: name || poi.name,
+    description: typeof req.body?.description === 'string' ? description : poi.description,
+    snapshots: keep,
+  }
+  writePoiFile(map, { nextId, pois: pois.map((p) => (p.id === id ? updated : p)) })
+  res.json(updated)
+})
+
+app.delete('/api/poi/:map/:id', (req, res) => {
+  const { map } = req.params
+  const id = Number(req.params.id)
+  if (!MAP_NAME_RE.test(map) || !Number.isInteger(id)) return res.status(400).end()
+  if (!poiWritable(map, res)) return
+
+  const { nextId, pois } = readPoiFile(map)
+  const poi = pois.find((p) => p.id === id)
+  if (!poi) return res.status(404).json({ error: `POI ${id} not found`, map })
+  for (const f of poi.snapshots) fs.rmSync(path.join(poiSnapDir(map), f), { force: true })
+  writePoiFile(map, { nextId, pois: pois.filter((p) => p.id !== id) })
+  res.json({ id, deleted: true })
+})
+
+app.get('/api/poi/:map/snapshots/:file', (req, res) => {
+  const { map, file } = req.params
+  if (!MAP_NAME_RE.test(map) || !SNAPSHOT_FILE_RE.test(file)) return res.status(400).end()
+  if (!fs.existsSync(path.join(poiSnapDir(map), file))) {
+    return res.status(404).json({ error: 'snapshot not found', map, file })
+  }
+  res.sendFile(file, { root: poiSnapDir(map) })
 })
 
 app.get('/api/mapping-state', (_req, res) => {
@@ -564,6 +858,9 @@ app.post('/api/mapping-state', (req, res) => {
     if (!mapName || !MAP_NAME_RE.test(mapName)) {
       return res.status(400).json({ error: 'mapName must match [A-Za-z0-9_]+' })
     }
+    // A new FAST-LIO session is a new camera_init, so the previous session's POIs would sit
+    // in the wrong frame. Ids start again at 1.
+    clearPois(mapName)
     mappingState = { mapping: true, mapName, startedAt: new Date().toISOString() }
     return res.json(mappingState)
   }

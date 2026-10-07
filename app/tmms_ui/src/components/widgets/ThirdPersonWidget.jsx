@@ -19,7 +19,7 @@ function CamBtn({ cmd, children, title }) {
 
 // Physical camera angle — distinct from the widget's own zoom/pan, which only moves the
 // decoded image around. These sit below the canvas so they stay clear of drag-to-pan.
-function CamControls() {
+export function CamControls() {
   return (
     <div
       className="flex items-center justify-center gap-4 flex-shrink-0 px-3"

@@ -10,9 +10,9 @@ import yaml
 from rclpy.node import Node
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from sensor_msgs.msg import CompressedImage, Joy, LaserScan
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Trigger
 from tmms_msgs.msg import QuadrupedMainStatus
-from tmms_msgs.srv import RelocalizeTrigger
+from tmms_msgs.srv import POIPoseTrigger, RelocalizeTrigger, StringTrigger
 
 # Mock camera specs: (width, height)
 _CAMERAS = [
@@ -47,7 +47,7 @@ class TmmsMockNode(Node):
 
         # Mock camera publishers
         self._cam_pubs = [
-            (self.create_publisher(CompressedImage, topic, 10), w, h)
+            (self.create_publisher(CompressedImage, topic, 10), w, h, topic.split('/')[1])
             for topic, w, h in _CAMERAS
         ]
 
@@ -74,6 +74,14 @@ class TmmsMockNode(Node):
         self.create_subscription(
             PoseWithCovarianceStamped, '/lichtblick_initialpose', self._initialpose_cb, 10)
         self.create_service(RelocalizeTrigger, '/relocalize', self._relocalize_cb)
+
+        # Mock mapping session: mapping_manager's start/stop and /poi_pose. Nothing is
+        # mapped; the pose is the mock robot's, so moving it with /relocalize moves the POI.
+        self._mapping = None
+        self.create_service(
+            StringTrigger, '/mapping_manager/start_mapping', self._start_mapping_cb)
+        self.create_service(Trigger, '/mapping_manager/stop_mapping', self._stop_mapping_cb)
+        self.create_service(POIPoseTrigger, '/poi_pose', self._poi_pose_cb)
 
         # Timers
         self.create_timer(0.01, self._publish_tick)          # 100 Hz
@@ -163,6 +171,35 @@ class TmmsMockNode(Node):
         response.message = f"Mock relocalized on '{name}'"
         return response
 
+    def _start_mapping_cb(self, request, response):
+        if self._mapping:
+            response.success = False
+            response.message = f'a mapping session is already active ({self._mapping})'
+            return response
+        self._mapping = request.data.strip()
+        response.success = True
+        response.message = f'mock mapping started: {self._mapping}'
+        return response
+
+    def _stop_mapping_cb(self, _request, response):
+        response.success = self._mapping is not None
+        response.message = (f'mock mapping ended: {self._mapping} (no .pcd written)'
+                            if self._mapping else 'no active mapping session')
+        self._mapping = None
+        return response
+
+    def _poi_pose_cb(self, _request, response):
+        if not self._mapping:
+            response.success = False
+            response.message = 'no active mapping session'
+            return response
+        x, y, yaw = self._pose
+        response.success = True
+        response.map_name = self._mapping
+        response.x, response.y, response.yaw = float(x), float(y), math.degrees(yaw)
+        response.message = f'{self._mapping}: x={x:.3f} y={y:.3f} yaw={math.degrees(yaw):.1f} deg'
+        return response
+
     def _scan_tick(self):
         if self._map is None:
             return
@@ -220,9 +257,11 @@ class TmmsMockNode(Node):
         t = time.monotonic()
         hue = int((t * 30) % 180)
         stamp = self.get_clock().now().to_msg()
-        for pub, w, h in self._cam_pubs:
+        for pub, w, h, name in self._cam_pubs:
             frame = np.full((h, w, 3), [hue, 200, 180], dtype=np.uint8)
             frame = cv2.cvtColor(frame, cv2.COLOR_HSV2BGR)
+            # Named, so a saved frame shows which camera it came from.
+            cv2.putText(frame, name, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
             _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
             msg = CompressedImage()
             msg.header.stamp = stamp

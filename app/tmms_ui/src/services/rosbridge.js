@@ -160,6 +160,12 @@ export function stopMapping(onResult, onError) {
   callRosService('/mapping_manager/stop_mapping', 'std_srvs/srv/Trigger', {}, onResult, onError, 660)
 }
 
+// The robot's pose in the live session's camera_init: x, y in m, yaw in DEGREES, plus the
+// session's map_name. Refused (success: false) when no session is running.
+export function getPoiPose(onResult, onError) {
+  callRosService('/poi_pose', 'tmms_msgs/srv/POIPoseTrigger', {}, onResult, onError, 10)
+}
+
 // Hands the robot between the operator and nav2. Paused = teleop owns it and nav2's cmd_vel
 // is dropped; unpaused = nav2 owns it and every teleop surface is refused. Unpausing also
 // runs balance_stand, so it can take a moment.
@@ -186,9 +192,10 @@ export function loadNavMap(name, onResult, onError) {
 
 // Loads <maps_dir>/pcd/<name>.pcd into map_flattener and publishes the flattened grid.
 // Seconds on a large cloud — the PCD read plus a full filter pass.
+// 20 s, past rosbridge's 5 s default: reading a 171 MB .pcd alone takes ~7 s.
 export function loadPcdForFlattening(mapName, onResult, onError) {
   callRosService('/map_flattener/load_pcd', 'tmms_msgs/srv/StringTrigger',
-    { data: mapName }, onResult, onError)
+    { data: mapName }, onResult, onError, 20)
 }
 
 // Publishes the last flattened grid onto /editor_flattened_map. No rebuild, no filter pass —

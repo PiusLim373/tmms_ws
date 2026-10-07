@@ -5,6 +5,7 @@ import {
 } from '../../services/rosbridge'
 import { WarningModal } from '../ui/WarningModal'
 import { MapEditorModal } from '../ui/MapEditorModal'
+import { PoiPanel } from './PoiPanel'
 import { Toast } from '../ui/Toast'
 import { gridToCells, imageToCells, loadMapImage } from '../../lib/gridCodec'
 import { todayPrefix } from '../../lib/dates'
@@ -80,6 +81,11 @@ const SUB_VIEWS = [
   { key: 'maps2d', label: 'Manage 2D Maps' },
 ]
 
+const TABS_3D = [
+  { key: 'manage', label: 'Map Management' },
+  { key: 'poi', label: 'Points of Interest' },
+]
+
 // Where in the 2D flow the operator was. The tab itself is persisted by MappingPage, which owns
 // it. Everything else about a half-finished 2D map lives on the robot and is read back from
 // there rather than mirrored here, so these two are the whole of it.
@@ -118,6 +124,18 @@ export function MappingToolWidget({ subView, onSubViewChange }) {
 
   const [editor, setEditor] = useState(null)   // null | { source }
   const [openingEditor, setOpeningEditor] = useState(false)
+
+  // Points of Interest only exists during a session, so the tab follows it: selected when
+  // mapping starts (or a reload finds one running), and handed back when it ends.
+  const [tab3d, setTab3d] = useState('manage')
+  const wasMappingRef = useRef(null)
+  useEffect(() => {
+    const was = wasMappingRef.current
+    wasMappingRef.current = mappingState.mapping
+    if (mappingState.mapping && was !== true) setTab3d('poi')
+    if (!mappingState.mapping && was === true) setTab3d('manage')
+  }, [mappingState.mapping])
+  const activeTab3d = mappingState.mapping ? tab3d : 'manage'
 
   const toastTimerRef = useRef(null)
   const fileInputRef = useRef(null)
@@ -260,7 +278,7 @@ export function MappingToolWidget({ subView, onSubViewChange }) {
       setWarningModal({
         open: true,
         title: `Map "${newMapName}" already exists`,
-        body: 'Starting a new mapping session with this name will overwrite the existing map data. This cannot be undone.',
+        body: 'Starting a new mapping session with this name will overwrite the existing map data and delete its points of interest. This cannot be undone.',
         onConfirm: () => {
           setWarningModal((w) => ({ ...w, open: false }))
           doStartMapping(newMapName)
@@ -355,7 +373,7 @@ export function MappingToolWidget({ subView, onSubViewChange }) {
     setWarningModal({
       open: true,
       title: `Delete "${filename}"?`,
-      body: 'This will permanently remove the map file from disk. This cannot be undone.',
+      body: 'This will permanently remove the map file and its points of interest from disk. 2D maps made from it keep their own copy. This cannot be undone.',
       onConfirm: () => {
         setWarningModal((w) => ({ ...w, open: false }))
         doDeleteMap(filename)
@@ -520,6 +538,8 @@ export function MappingToolWidget({ subView, onSubViewChange }) {
           // this map was originally cut from.
           pcdName: entry.pcdFile ? entry.pcdFile.replace(/^.*\//, '').replace(/\.pcd$/, '') : null,
           name: entry.name,
+          // Saved again with the map if its 3D source (and so its POI file) is gone.
+          pois: entry.pois ?? [],
         },
       })
     } catch (err) {
@@ -658,6 +678,29 @@ export function MappingToolWidget({ subView, onSubViewChange }) {
         </div>
 
         {subView === 'maps3d' && (
+          <div className="nav-tabs">
+            {TABS_3D.map(({ key, label }) => {
+              const disabled = key === 'poi' && !mappingState.mapping
+              return (
+                <button
+                  key={key}
+                  className={`nav-tab${activeTab3d === key ? ' active' : ''}`}
+                  onClick={() => setTab3d(key)}
+                  disabled={disabled}
+                  title={disabled ? 'Available while mapping' : undefined}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {subView === 'maps3d' && activeTab3d === 'poi' && (
+          <PoiPanel mapName={mappingState.mapName} showToast={showToast} />
+        )}
+
+        {subView === 'maps3d' && activeTab3d === 'manage' && (
           <>
             {mappingState.mapping ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

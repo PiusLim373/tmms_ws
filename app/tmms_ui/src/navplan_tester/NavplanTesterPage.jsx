@@ -15,6 +15,8 @@ import {
 } from '../services/rosbridge'
 import { ConfirmSendModal } from './ConfirmSendModal'
 import { MapOverlay } from './MapOverlay'
+import { POI_COLOR, PoiLayer } from './PoiLayer'
+import { PoiDetailModal } from './PoiDetailModal'
 import {
   nextNavplanId, relocalize, sendNavigationPlan, subscribeLaserScan,
 } from './lib/navplanRos'
@@ -231,7 +233,7 @@ export function NavplanTesterPage() {
   const pageRef = useRef(null)
   const colRef = useRef(null)
   const [mapPct, setMapPct] = useState(0.76)
-  const [splits, setSplits] = useState([0.14, 0.27, 0.58, 0.85])
+  const [splits, setSplits] = useState([0.12, 0.24, 0.44, 0.66, 0.87])
 
   const resizeSplit = useCallback((i, pct) => setSplits((s) => {
     const lo = (i > 0 ? s[i - 1] : 0) + MIN_SPAN
@@ -248,6 +250,35 @@ export function NavplanTesterPage() {
   const [pins, setPins] = useState([])
   const [selectedId, setSelectedId] = useState(null)
   const [hoverWorld, setHoverWorld] = useState(null)
+  const pinsRef = useRef(pins)
+  pinsRef.current = pins
+
+  // -- points of interest -------------------------------------------------
+  // From the map's yaml, yaw converted to radians. Moving or turning one only lasts until the
+  // map is changed or the page reloaded -- there is nowhere to save it yet.
+  const savedPois = useMemo(() => (selectedMap?.pois ?? []).map(
+    (p) => ({ ...p, yaw: (p.yaw * Math.PI) / 180 })), [selectedMap])
+  const [pois, setPois] = useState([])
+  const [poiOpenId, setPoiOpenId] = useState(null)
+  useEffect(() => { setPois(savedPois); setPoiOpenId(null) }, [savedPois])
+
+  // A route pin added from a POI carries its id, and the two move together whichever one is
+  // dragged or turned -- including every other pin added from the same POI.
+  const updatePoi = useCallback((poiId, patch) => {
+    setPois((prev) => prev.map((p) => (p.id === poiId ? { ...p, ...patch } : p)))
+    setPins((prev) => prev.map((p) => (p.poiId === poiId ? { ...p, ...patch } : p)))
+  }, [])
+
+  const addPoiToRoute = useCallback((poi) => setPins((prev) => {
+    const pin = {
+      ...makePin(WAYPOINT_TYPE, poi, prev),
+      poiId: poi.id, label: poi.name, yaw: poi.yaw, headingSet: true,
+    }
+    return reindexOrder([...prev, pin])
+  }), [])
+
+  const linkedPoiIds = useMemo(
+    () => new Set(pins.filter((p) => p.poiId != null).map((p) => p.poiId)), [pins])
 
   // Waypoint placing is the resting state; relocalizing temporarily takes the cursor over.
   const placingType = reloc === 'idle' ? WAYPOINT_TYPE
@@ -271,11 +302,17 @@ export function NavplanTesterPage() {
     })
   }, [])
 
-  const movePin = useCallback((id, world) => setPins((prev) => prev.map(
-    (p) => (p.id === id ? { ...p, x: world.x, y: world.y } : p))), [])
+  const movePin = useCallback((id, world) => {
+    const poiId = pinsRef.current.find((p) => p.id === id)?.poiId
+    if (poiId != null) { updatePoi(poiId, { x: world.x, y: world.y }); return }
+    setPins((prev) => prev.map((p) => (p.id === id ? { ...p, x: world.x, y: world.y } : p)))
+  }, [updatePoi])
 
-  const setYaw = useCallback((id, yaw) => setPins((prev) => prev.map(
-    (p) => (p.id === id ? { ...p, yaw, headingSet: true } : p))), [])
+  const setYaw = useCallback((id, yaw) => {
+    const poiId = pinsRef.current.find((p) => p.id === id)?.poiId
+    if (poiId != null) { updatePoi(poiId, { yaw }); return }
+    setPins((prev) => prev.map((p) => (p.id === id ? { ...p, yaw, headingSet: true } : p)))
+  }, [updatePoi])
 
   const deletePin = useCallback((id) => {
     setPins((prev) => reindexOrder(prev.filter((p) => p.id !== id)))
@@ -318,7 +355,8 @@ export function NavplanTesterPage() {
 
     const onKey = (e) => {
       // The pin is in flight; removing it now would leave a failed reply with nothing to retry.
-      if (isTyping(e.target) || reloc === 'sending') return
+      // The POI view handles its own Escape and has nothing to delete.
+      if (isTyping(e.target) || reloc === 'sending' || poiOpenId != null) return
 
       if (e.key === 'Escape') {
         if (reloc !== 'idle') clearRelocPin()
@@ -337,7 +375,7 @@ export function NavplanTesterPage() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedId, initialPin, reloc, clearRelocPin, deletePin])
+  }, [selectedId, initialPin, reloc, clearRelocPin, deletePin, poiOpenId])
 
   // Sent with the viewed map, which need not be the robot's: relocalizing is how the robot is
   // moved onto it. The reply is the outcome, so the pin stays on failure to be nudged and resent.
@@ -367,7 +405,7 @@ export function NavplanTesterPage() {
       // plan when the robot is on another one -- tagging it with the robot's map instead would
       // pass that check and drive to coordinates from the wrong map.
       mapName,
-      waypoints: waypoints.map((p) => ({ x: p.x, y: p.y, yaw: effectiveYaw(p) })),
+      waypoints: waypoints.map((p) => ({ x: p.x, y: p.y, yaw: effectiveYaw(p), label: p.label })),
       // Display only. sendNavigationPlan destructures just navplanId/mapName/waypoints, so
       // this can never reach the service. Snapshotted, not live: the modal shows what the
       // plan was built against.
@@ -504,10 +542,53 @@ export function NavplanTesterPage() {
       )}
     </Widget>,
 
-    <Widget key="waypoints" step="3" title="WAYPOINTS" aside={<Aside>{waypoints.length}</Aside>}>
+    <Widget key="pois" step="3" title="POINTS OF INTEREST" aside={<Aside color={POI_COLOR}>{pois.length}</Aside>}>
+      {pois.length === 0 ? (
+        <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+          {info ? 'This map has no points of interest.' : 'Select a map to see its points of interest.'}
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 6 }}>
+            Hover a blue marker for its snapshots, click it to open, drag it to move. ＋ adds
+            it to the route. Changes last until the map is changed or the page reloaded.
+          </div>
+          {pois.map((p) => (
+            <div
+              key={p.id}
+              onClick={() => setPoiOpenId(p.id)}
+              className="val-mono"
+              style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                fontSize: 11, padding: '3px 4px', cursor: 'pointer', color: 'var(--text)',
+                borderLeft: `2px solid ${linkedPoiIds.has(p.id) ? POI_COLOR : 'transparent'}`,
+              }}
+            >
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ color: POI_COLOR }}>#{p.id}</span> {p.name}
+                <span style={{ color: 'var(--text-dim)' }}>
+                  {' '}· {p.x.toFixed(1)}, {p.y.toFixed(1)} · {degFromYaw(p.yaw).toFixed(0)}°
+                </span>
+              </span>
+              <button
+                className="btn-icon"
+                title="Add to route"
+                disabled={!info}
+                onClick={(e) => { e.stopPropagation(); addPoiToRoute(p) }}
+              >
+                ＋
+              </button>
+            </div>
+          ))}
+        </>
+      )}
+    </Widget>,
+
+    <Widget key="waypoints" step="4" title="WAYPOINTS" aside={<Aside>{waypoints.length}</Aside>}>
       <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 6 }}>
-        Click the map in order. Drag a pin’s ring to set its heading — only the last
-        one is enforced. Select a pin and press Delete to remove it, Esc to deselect.
+        Click the map in order, or add points of interest with ＋. Drag a pin’s ring to set its
+        heading — only the last one is enforced. Select a pin and press Delete to remove it,
+        Esc to deselect.
       </div>
 
       {waypoints.map((p, i) => (
@@ -522,8 +603,9 @@ export function NavplanTesterPage() {
             color: 'var(--text)',
           }}
         >
-          <span>
-            {i + 1}. {p.x.toFixed(2)}, {p.y.toFixed(2)}
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {i + 1}.{p.poiId != null && <span style={{ color: POI_COLOR }}> {p.label}</span>}
+            {' '}{p.x.toFixed(2)}, {p.y.toFixed(2)}
             {effectiveYaw(p) != null && ` · ${degFromYaw(p.yaw).toFixed(0)}°`}
           </span>
           <button
@@ -557,7 +639,7 @@ export function NavplanTesterPage() {
 
     <Widget
       key="robot"
-      step="4"
+      step="5"
       title="ROBOT"
       aside={(
         <Aside color={statusLive ? TONE.ok : undefined}>
@@ -605,7 +687,7 @@ export function NavplanTesterPage() {
       )}
     </Widget>,
 
-    <Widget key="log" step="5" title="NAVPLAN LOG" aside={<Aside>/curr_navplan</Aside>}>
+    <Widget key="log" step="6" title="NAVPLAN LOG" aside={<Aside>/curr_navplan</Aside>}>
       {planLog.length === 0
         ? <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>nothing yet</div>
         : planLog.map((line, i) => (
@@ -667,6 +749,16 @@ export function NavplanTesterPage() {
               waypoints={waypoints}
               scan={scanLive ? scan : null}
               ghost={reloc === 'placing' ? hoverWorld : null}
+            />
+
+            <PoiLayer
+              info={info}
+              view={view}
+              mapName={mapName}
+              pois={pois}
+              linked={linkedPoiIds}
+              onMove={(id, world) => updatePoi(id, { x: world.x, y: world.y })}
+              onOpen={setPoiOpenId}
             />
 
             {info && (
@@ -765,6 +857,23 @@ export function NavplanTesterPage() {
           ))}
         </div>
       </div>
+
+      <PoiDetailModal
+        poi={pois.find((p) => p.id === poiOpenId) ?? null}
+        saved={savedPois.find((p) => p.id === poiOpenId) ?? null}
+        mapName={mapName}
+        inRoute={pins.filter((p) => p.poiId === poiOpenId).length}
+        onYaw={(yaw) => updatePoi(poiOpenId, { yaw })}
+        onReset={() => {
+          const s = savedPois.find((p) => p.id === poiOpenId)
+          if (s) updatePoi(s.id, { x: s.x, y: s.y, yaw: s.yaw })
+        }}
+        onAddToRoute={() => {
+          const poi = pois.find((p) => p.id === poiOpenId)
+          if (poi) addPoiToRoute(poi)
+        }}
+        onClose={() => setPoiOpenId(null)}
+      />
 
       <ConfirmSendModal
         open={confirm != null}
