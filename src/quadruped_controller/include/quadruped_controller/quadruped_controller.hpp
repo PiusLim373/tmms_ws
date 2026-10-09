@@ -12,6 +12,7 @@
 #include "sensor_msgs/msg/joy.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "rosgraph_msgs/msg/clock.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "unitree_api/msg/request.hpp"
@@ -48,6 +49,7 @@ private:
   void moveTimerCallback();
   void poseTimerCallback();
   void mainStatusTimerCallback();
+  void clockTimerCallback();
   void quadrupedCmdCallback(
     const tmms_msgs::srv::StringTrigger::Request::SharedPtr req,
     tmms_msgs::srv::StringTrigger::Response::SharedPtr res);
@@ -148,8 +150,14 @@ private:
   rclcpp::TimerBase::SharedPtr move_timer_;
   rclcpp::TimerBase::SharedPtr pose_timer_;
   rclcpp::TimerBase::SharedPtr main_status_timer_;
+  rclcpp::Publisher<rosgraph_msgs::msg::Clock>::SharedPtr clock_pub_;
+  rclcpp::TimerBase::SharedPtr clock_timer_;
+  rclcpp::Clock system_clock_{RCL_SYSTEM_TIME};
 
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  // odom -> base_footprint throttle, on /dog_odom's own stamps. 0 = send every message.
+  double odom_tf_period_{0.0};
+  rclcpp::Time last_odom_tf_stamp_{0, 0, RCL_ROS_TIME};
 };
 
 #endif  // QUADRUPED_CONTROLLER__QUADRUPED_CONTROLLER_HPP_

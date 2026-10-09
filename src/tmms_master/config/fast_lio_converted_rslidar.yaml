@@ -68,11 +68,17 @@
         publish:
             path_en:  true
             effect_map_en: false
-            map_en: true                  # REQUIRED for /map_save: it gates the map
-                                          # accumulation (append_map_chunk) that it writes
+            map_en: true                  # REQUIRED for /map_save: publish_map() is the only
+                                          # thing that fills pcl_wait_pub
+            # /downsampled_fastlio_map, sent packed at 16 B/pt. Display only: /map_save is unaffected.
+            map_leaf_size: 0.1            # m, starting voxel
+            map_max_points: 200000        # point budget; over it the voxel grows by map_leaf_growth
+            map_leaf_growth: 1.25         # voxel growth per overflow, > 1 (lower = gentler, more steps)
+            map_min_new_points: 1000      # resend once this many new points have built up ...
+            map_min_period: 5.0           # s  ... and at least this long since the last send,
+            map_max_period: 30.0          # s  or after this long if anything at all is new
             scan_publish_en:  true
-            dense_publish_en: true       # publish_map() republishes the WHOLE accumulated
-                                          # map at 1 Hz; dense -> >100 MB msgs on the full bag
+            dense_publish_en: true        # dense scans into the saved map and /downsampled_fastlio_map
             scan_bodyframe_pub_en: false
 
         pcd_save:

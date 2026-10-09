@@ -56,6 +56,11 @@ This replaces the identity map->camera_init / map->odom statics fast_lio.launch.
 publish, which were only ever correct when odom happened to be zero; at any other odom pose
 the map and the robot model were displaced by exactly that pose.
 
+AMCL's map -> odom broadcast (its tf_broadcast parameter) is switched off before the anchor is
+placed and back on when the session ends. AMCL keeps matching scans against the previously
+loaded 2D map, so during mapping its corrections are wrong, and each one moves odom -- and the
+anchored camera_init with it -- in the map frame.
+
 POINTS OF INTEREST
 ------------------
 The map_flattener applies no transform, so camera_init coordinates are the coordinates of every
@@ -79,13 +84,15 @@ import threading
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.duration import Duration
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from rclpy.time import Time
 
 from geometry_msgs.msg import Pose, TransformStamped
 from nav_msgs.msg import Odometry
+from rcl_interfaces.srv import SetParameters
 from std_srvs.srv import Trigger
 from tf2_msgs.msg import TFMessage
 from tmms_msgs.srv import POIPoseTrigger, StringTrigger
@@ -116,6 +123,8 @@ class MappingManagerNode(Node):
         self.declare_parameter('odom_topic', '/Odometry')
         self.declare_parameter('poi_pose_max_age_sec', 1.0)
         self.declare_parameter('tf_lookup_timeout_sec', 5.0)
+        # AMCL whose map -> odom broadcast is paused during a session; '' leaves AMCL alone.
+        self.declare_parameter('amcl_node', '/amcl')
         # Widened for large maps -- too short a timeout here made the map look lost when it was
         # really still writing (see stopMapping's matching timeout in rosbridge.js).
         self.declare_parameter('map_save_timeout_sec', 600.0)
@@ -160,6 +169,10 @@ class MappingManagerNode(Node):
 
         self._map_save_cli = self.create_client(
             Trigger, '/map_save', callback_group=self._aux_group)
+        amcl = self._param('amcl_node')
+        self._amcl_cli = self.create_client(
+            SetParameters, f'{amcl}/set_parameters',
+            callback_group=self._aux_group) if amcl else None
 
         self.create_service(
             StringTrigger, '~/start_mapping', self._start_cb, callback_group=self._srv_group)
@@ -198,6 +211,7 @@ class MappingManagerNode(Node):
         # Never block the timer behind a long stop_mapping.
         if not self._lock.acquire(blocking=False):
             return
+        died = False
         try:
             if self._proc is not None and self._proc.poll() is not None:
                 self.get_logger().warning(
@@ -207,8 +221,11 @@ class MappingManagerNode(Node):
                 self._proc = None
                 self._map_name = None
                 self._pcd_path = None
+                died = True
         finally:
             self._lock.release()
+        if died:
+            self._set_amcl_tf_broadcast(True)
 
     def _publish_anchor(self, looked_up):
         """Latch odom -> camera_init at the value just read for odom -> dog_imu_link.
@@ -277,6 +294,35 @@ class MappingManagerNode(Node):
             return False, f'/map_save reported failure: {result.message}'
         return True, result.message
 
+    def _amcl_request(self, enabled):
+        return SetParameters.Request(parameters=[
+            Parameter('tf_broadcast', Parameter.Type.BOOL, enabled).to_parameter_msg()])
+
+    def _set_amcl_tf_broadcast(self, enabled):
+        """Switch AMCL's map -> odom broadcast. Best effort: no AMCL running is not an error."""
+        if self._amcl_cli is None:
+            return
+        state = 'on' if enabled else 'off'
+        if not self._amcl_cli.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warning(
+                f'{self._amcl_cli.srv_name} unavailable; AMCL tf_broadcast left as is')
+            return
+
+        future = self._amcl_cli.call_async(self._amcl_request(enabled))
+        done = threading.Event()
+        future.add_done_callback(lambda _f: done.set())
+        if not done.wait(5.0):
+            future.cancel()
+            self.get_logger().warning(f'AMCL did not answer; tf_broadcast not switched {state}')
+            return
+
+        result = future.result()
+        if result is None or not result.results or not result.results[0].successful:
+            reason = result.results[0].reason if result and result.results else 'no response'
+            self.get_logger().warning(f'AMCL refused tf_broadcast {state}: {reason}')
+            return
+        self.get_logger().info(f'AMCL map -> odom broadcast {state}')
+
     def _terminate_child(self):
         """SIGINT the whole launch process group, escalating if it will not go."""
         proc = self._proc
@@ -314,6 +360,31 @@ class MappingManagerNode(Node):
                 self.get_logger().warning(
                     'shutting down with a mapping session active -- the map was NOT saved.')
                 self._terminate_child()
+                self._restore_amcl_at_exit()
+
+    def _restore_amcl_at_exit(self):
+        """Switch AMCL's broadcast back on from a fresh context: by now rclpy's signal handler
+        has usually shut this node's own context down."""
+        amcl = self._param('amcl_node')
+        if not amcl:
+            return
+        ctx = rclpy.Context()
+        rclpy.init(context=ctx)
+        try:
+            node = rclpy.create_node('mapping_manager_exit', context=ctx)
+            cli = node.create_client(SetParameters, f'{amcl}/set_parameters')
+            future = None
+            if cli.wait_for_service(timeout_sec=2.0):
+                future = cli.call_async(self._amcl_request(True))
+                rclpy.spin_until_future_complete(
+                    node, future, executor=SingleThreadedExecutor(context=ctx), timeout_sec=3.0)
+            result = future.result() if future is not None and future.done() else None
+            if result is not None and result.results and result.results[0].successful:
+                self.get_logger().info('AMCL map -> odom broadcast on')
+            else:
+                self.get_logger().warning('could not switch AMCL tf_broadcast back on at exit')
+        finally:
+            rclpy.shutdown(context=ctx)
 
     # -- services --------------------------------------------------------------
 
@@ -379,6 +450,8 @@ class MappingManagerNode(Node):
                 response.message = f'could not create {pcd_dir}: {exc}'
                 return response
 
+            self._set_amcl_tf_broadcast(False)
+
             parent = self._param('parent_frame')
             imu = self._param('imu_frame')
             try:
@@ -386,6 +459,7 @@ class MappingManagerNode(Node):
                     parent, imu, Time(),
                     Duration(seconds=float(self._param('tf_lookup_timeout_sec'))))
             except TransformException as exc:
+                self._set_amcl_tf_broadcast(True)
                 response.success = False
                 response.message = (
                     f'could not look up {parent} -> {imu}: {exc}.')
@@ -404,6 +478,7 @@ class MappingManagerNode(Node):
                 # makes the group-kill in stop_mapping reach every node it spawned.
                 self._proc = subprocess.Popen(cmd, start_new_session=True, env=os.environ.copy())
             except OSError as exc:
+                self._set_amcl_tf_broadcast(True)
                 response.success = False
                 response.message = f'could not spawn {" ".join(cmd)}: {exc}'
                 return response
@@ -434,6 +509,7 @@ class MappingManagerNode(Node):
             self._map_name = None
             self._pcd_path = None
 
+        self._set_amcl_tf_broadcast(True)
         self.get_logger().info(f'mapping session "{name}" ended; {kill_msg}')
         response.success = save_ok
         response.message = (

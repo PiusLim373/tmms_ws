@@ -13,17 +13,9 @@ CPU to burn.
 Headless by design -- no RViz. Monitor the run in Lichtblick on /converted_rslidar_points,
 /Odometry, /path and /cloud_registered.
 
-For the accumulated map, subscribe to /downsampled_fastlio_map, NOT /Laser_map. /Laser_map is
-the whole map re-serialised every second with no deduplication at 48 B/pt -- 41 MB per message
-at 855k points and still growing, which rosbridge cannot sustain (the view freezes a minute or
-two in). map_downsampler voxelises it to /downsampled_fastlio_map, whose point count saturates
-once an area has been covered. Leaving /Laser_map subscribed in Lichtblick defeats this
-entirely, so remove it from the panel.
-
-map_downsampler_node itself runs from operation.launch.py, not from here -- its ~/load_pcd
-service also serves saved .pcd files during navigation, when this launch is not running. So
-/downsampled_fastlio_map appears as soon as this launch starts producing /Laser_map, with no
-argument to enable it.
+For the accumulated map, subscribe to /downsampled_fastlio_map. FAST-LIO publishes it itself:
+voxelised, held to a point budget, and resent only as the map grows. Its knobs are the
+publish.map_* parameters in fast_lio_converted_rslidar.yaml.
 
 Standalone, if you do need it (defaults are correct for the live system):
 
@@ -175,9 +167,5 @@ def generate_launch_description():
     # No static transforms here by design -- mapping_manager_node latches the one that
     # matters (odom -> camera_init) from a live odom -> dog_imu_link lookup at session start.
     # See the TF section of the docstring above.
-    #
-    # map_downsampler_node is NOT here either: it moved to operation.launch.py, because its
-    # ~/load_pcd service has to be reachable during navigation, when this launch is not
-    # running. It is a pure subscriber, so it costs nothing while /Laser_map does not exist.
 
     return LaunchDescription(args + [converter, fast_lio])

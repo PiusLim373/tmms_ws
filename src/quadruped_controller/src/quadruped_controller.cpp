@@ -26,6 +26,14 @@ QuadrupedController::QuadrupedController()
 {
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
+  // /dog_odom arrives far faster than any TF consumer needs, and rosbridge relays every /tf.
+  const double odom_tf_rate = declare_parameter<double>("odom_tf_rate", 50.0);  // Hz, 0 = every msg
+  odom_tf_period_ = odom_tf_rate > 0.0 ? 1.0 / odom_tf_rate : 0.0;
+
+  // System time on /clock: Lichtblick's live view uses it as "now" instead of the browser's
+  // clock, so the display follows the robot even when the two clocks disagree.
+  const double clock_rate = declare_parameter<double>("clock_rate", 50.0);  // Hz, 0 = off
+
   joy_sub_ = create_subscription<sensor_msgs::msg::Joy>(
     "/joy", 10,
     std::bind(&QuadrupedController::joyCallback, this, std::placeholders::_1));
@@ -142,6 +150,14 @@ QuadrupedController::QuadrupedController()
 
   main_status_timer_ = create_wall_timer(
     200ms, std::bind(&QuadrupedController::mainStatusTimerCallback, this));
+
+  // Wall timer: steady clock, so the boot-time step from 1970 to pc1's time does not stall it.
+  if (clock_rate > 0.0) {
+    clock_pub_ = create_publisher<rosgraph_msgs::msg::Clock>("/clock", rclcpp::ClockQoS());
+    clock_timer_ = create_wall_timer(
+      std::chrono::duration<double>(1.0 / clock_rate),
+      std::bind(&QuadrupedController::clockTimerCallback, this));
+  }
 
   RCLCPP_INFO(get_logger(), "Quadruped Controller node started");
 }
@@ -332,6 +348,17 @@ void QuadrupedController::lowStateCallback(
 void QuadrupedController::dogOdomCallback(
   const nav_msgs::msg::Odometry::SharedPtr msg)
 {
+  // Throttled on the message stamps so the spacing stays even if callbacks arrive in bursts.
+  // A stamp going backwards (B2 restart) resets it.
+  const rclcpp::Time stamp(msg->header.stamp, RCL_ROS_TIME);
+  if (odom_tf_period_ > 0.0 && last_odom_tf_stamp_.nanoseconds() != 0) {
+    const double dt = (stamp - last_odom_tf_stamp_).seconds();
+    if (dt >= 0.0 && dt < odom_tf_period_) {
+      return;
+    }
+  }
+  last_odom_tf_stamp_ = stamp;
+
   // odom -> base_footprint carries only the planar (x, y, yaw) pose; height
   // and tilt are applied separately in base_footprint -> base_link (see
   // sportStateCallback), keeping base_footprint flat for Nav2/RTAB-Map.
@@ -356,6 +383,14 @@ void QuadrupedController::dogOdomCallback(
   t.transform.rotation.z = yaw_q.z();
   t.transform.rotation.w = yaw_q.w();
   tf_broadcaster_->sendTransform(t);
+}
+
+void QuadrupedController::clockTimerCallback()
+{
+  // Explicit system clock: the node clock would follow /clock itself under use_sim_time.
+  rosgraph_msgs::msg::Clock msg;
+  msg.clock = system_clock_.now();
+  clock_pub_->publish(msg);
 }
 
 void QuadrupedController::mainStatusTimerCallback()
