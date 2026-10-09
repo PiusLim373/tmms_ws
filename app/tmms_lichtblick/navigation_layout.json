@@ -199,7 +199,7 @@
           "alpha": 0.5
         },
         "/robot_description": {
-          "visible": true,
+          "visible": false,
           "displayMode": "collision",
           "fallbackColor": "#553480"
         },
@@ -259,7 +259,24 @@
           "visible": false
         }
       },
-      "layers": {},
+      "layers": {
+        "robot-model": {
+          "layerId": "foxglove.Urdf",
+          "instanceId": "robot-model",
+          "label": "Robot",
+          "visible": true,
+          "frameLocked": true,
+          "order": 1,
+          "sourceType": "url",
+          "url": "http://{{.Host}}:8080/packages/tmms_description/urdf/b2_visual.urdf",
+          "filePath": "",
+          "parameter": "",
+          "topic": "",
+          "framePrefix": "",
+          "displayMode": "visual",
+          "fallbackColor": "#553480"
+        }
+      },
       "publish": {
         "type": "pose_estimate",
         "poseTopic": "/lichtblick_navgoal",

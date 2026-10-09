@@ -1,0 +1,196 @@
+<?xml version="1.0"?>
+<robot name="b2_visual">
+  <!-- Display-only B2 model for Lichtblick and the mapping/ robot_state_publisher. Derived from
+     tmms_description.urdf.xacro: the links that have visuals and the leg joints between them.
+     Mesh paths are relative to this file, so Lichtblick fetches them from wherever it loaded
+     it; package:// would need the rosbridge player to fetch assets, which it cannot.
+     Regenerate if the legs or meshes change. -->
+  <link name="base_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/base_link.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="FL_hip">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/FL_hip.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="FL_thigh">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/FL_thigh.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="FL_calf">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/FL_calf.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="FR_hip">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/FR_hip.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="FR_thigh">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/FR_thigh.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="FR_calf">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/FR_calf.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="RL_hip">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/RL_hip.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="RL_thigh">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/RL_thigh.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="RL_calf">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/RL_calf.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="RR_hip">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/RR_hip.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="RR_thigh">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/RR_thigh.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="RR_calf">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/RR_calf.dae" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="FL_hip_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="0.3285 0.072 0" />
+    <parent link="base_link" />
+    <child link="FL_hip" />
+    <axis xyz="1 0 0" />
+    <limit effort="200" lower="-0.87" upper="0.87" velocity="23" />
+  </joint>
+  <joint name="FL_thigh_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0.11973 0" />
+    <parent link="FL_hip" />
+    <child link="FL_thigh" />
+    <axis xyz="0 1 0" />
+    <limit effort="200" lower="-0.94" upper="4.69" velocity="23" />
+  </joint>
+  <joint name="FL_calf_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="0 -8.6984E-05 -0.35" />
+    <parent link="FL_thigh" />
+    <child link="FL_calf" />
+    <axis xyz="0 1 0" />
+    <limit effort="320" lower="-2.82" upper="-0.43" velocity="14" />
+  </joint>
+  <joint name="FR_hip_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="0.3285 -0.072 0" />
+    <parent link="base_link" />
+    <child link="FR_hip" />
+    <axis xyz="1 0 0" />
+    <limit effort="200" lower="-0.87" upper="0.87" velocity="23" />
+  </joint>
+  <joint name="FR_thigh_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="0 -0.11973 0" />
+    <parent link="FR_hip" />
+    <child link="FR_thigh" />
+    <axis xyz="0 1 0" />
+    <limit effort="200" lower="-0.94" upper="4.69" velocity="23" />
+  </joint>
+  <joint name="FR_calf_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="0 8.6986E-05 -0.35" />
+    <parent link="FR_thigh" />
+    <child link="FR_calf" />
+    <axis xyz="0 1 0" />
+    <limit effort="320" lower="-2.82" upper="-0.43" velocity="14" />
+  </joint>
+  <joint name="RL_hip_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="-0.3285 0.072 0" />
+    <parent link="base_link" />
+    <child link="RL_hip" />
+    <axis xyz="1 0 0" />
+    <limit effort="200" lower="-0.87" upper="0.87" velocity="23" />
+  </joint>
+  <joint name="RL_thigh_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0.11973 0" />
+    <parent link="RL_hip" />
+    <child link="RL_thigh" />
+    <axis xyz="0 1 0" />
+    <limit effort="200" lower="-0.94" upper="4.69" velocity="23" />
+  </joint>
+  <joint name="RL_calf_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="0 -8.6984E-05 -0.35" />
+    <parent link="RL_thigh" />
+    <child link="RL_calf" />
+    <axis xyz="0 1 0" />
+    <limit effort="320" lower="-2.82" upper="-0.43" velocity="14" />
+  </joint>
+  <joint name="RR_hip_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="-0.3285 -0.072 0" />
+    <parent link="base_link" />
+    <child link="RR_hip" />
+    <axis xyz="1 0 0" />
+    <limit effort="200" lower="-0.87" upper="0.87" velocity="23" />
+  </joint>
+  <joint name="RR_thigh_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="0 -0.11973 0" />
+    <parent link="RR_hip" />
+    <child link="RR_thigh" />
+    <axis xyz="0 1 0" />
+    <limit effort="200" lower="-0.94" upper="4.69" velocity="23" />
+  </joint>
+  <joint name="RR_calf_joint" type="revolute">
+    <origin rpy="0 0 0" xyz="0 8.6986E-05 -0.35" />
+    <parent link="RR_thigh" />
+    <child link="RR_calf" />
+    <axis xyz="0 1 0" />
+    <limit effort="320" lower="-2.82" upper="-0.43" velocity="14" />
+  </joint>
+</robot>

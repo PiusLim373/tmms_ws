@@ -52,6 +52,10 @@ session start is the pose of camera_init, and the resulting tree is:
     odom -(quadruped_controller)-> base_footprint -> base_link -> rslidar, dog_imu_link, ...
       +--(this node, static)-----> camera_init -(FAST-LIO)-> body
 
+The mapping view draws the robot on body, not on leg odometry, which drifts off the map:
+fast_lio.launch.py publishes the display model under the mapping/ prefix, and the same latched
+message carries body -> mapping/base_link, i.e. dog_imu_link -> base_link.
+
 This replaces the identity map->camera_init / map->odom statics fast_lio.launch.py used to
 publish, which were only ever correct when odom happened to be zero; at any other odom pose
 the map and the robot model were displaced by exactly that pose.
@@ -120,6 +124,10 @@ class MappingManagerNode(Node):
         self.declare_parameter('imu_frame', 'dog_imu_link')
         self.declare_parameter('child_frame', 'camera_init')
         self.declare_parameter('base_frame', 'base_footprint')
+        # Display model hung off body; the prefix must match fast_lio.launch.py's. '' = off.
+        self.declare_parameter('body_frame', 'body')
+        self.declare_parameter('model_root_frame', 'base_link')
+        self.declare_parameter('model_frame_prefix', 'mapping/')
         self.declare_parameter('odom_topic', '/Odometry')
         self.declare_parameter('poi_pose_max_age_sec', 1.0)
         self.declare_parameter('tf_lookup_timeout_sec', 5.0)
@@ -227,8 +235,12 @@ class MappingManagerNode(Node):
         if died:
             self._set_amcl_tf_broadcast(True)
 
-    def _publish_anchor(self, looked_up):
-        """Latch odom -> camera_init at the value just read for odom -> dog_imu_link.
+    def _publish_anchor(self, looked_up, model=None):
+        """Latch odom -> camera_init at the value just read for odom -> dog_imu_link, and
+        body -> <prefix>base_link at dog_imu_link -> base_link (`model`) if given.
+
+        Both go in one message: this publisher latches only its last one, so a second
+        publish would take the anchor away from late subscribers.
 
         Re-sent fresh on every start_mapping. tf2 keys its static cache by child frame and
         overwrites, so session N's anchor replaces session N-1's rather than stacking up.
@@ -240,12 +252,23 @@ class MappingManagerNode(Node):
         anchor.header.frame_id = self._param('parent_frame')
         anchor.child_frame_id = self._param('child_frame')
         anchor.transform = looked_up.transform
-        self._tf_static_pub.publish(TFMessage(transforms=[anchor]))
+        transforms = [anchor]
 
-        t = anchor.transform.translation
-        self.get_logger().info(
-            f'anchored {anchor.header.frame_id} -> {anchor.child_frame_id} at '
-            f'xyz=[{t.x:.3f}, {t.y:.3f}, {t.z:.3f}]')
+        if model is not None:
+            body = TransformStamped()
+            body.header.stamp = anchor.header.stamp
+            body.header.frame_id = self._param('body_frame')
+            body.child_frame_id = self._param('model_frame_prefix') + self._param('model_root_frame')
+            body.transform = model.transform
+            transforms.append(body)
+
+        self._tf_static_pub.publish(TFMessage(transforms=transforms))
+
+        for tf in transforms:
+            t = tf.transform.translation
+            self.get_logger().info(
+                f'anchored {tf.header.frame_id} -> {tf.child_frame_id} at '
+                f'xyz=[{t.x:.3f}, {t.y:.3f}, {t.z:.3f}]')
 
     def _odom_cb(self, msg):
         self._odom = (msg, time.monotonic())
@@ -465,9 +488,23 @@ class MappingManagerNode(Node):
                     f'could not look up {parent} -> {imu}: {exc}.')
                 return response
 
+            # body is dog_imu_link, so the display model's root sits at dog_imu_link ->
+            # base_link from it. Mapping does not need it, so a failure only warns.
+            model = None
+            if self._param('model_frame_prefix'):
+                root = self._param('model_root_frame')
+                try:
+                    model = self._buffer.lookup_transform(
+                        imu, root, Time(),
+                        Duration(seconds=float(self._param('tf_lookup_timeout_sec'))))
+                except TransformException as exc:
+                    self.get_logger().warning(
+                        f'could not look up {imu} -> {root}: {exc}; the mapping view will '
+                        'not draw the robot.')
+
             # Anchor before spawning, so camera_init is already placed by the time FAST-LIO
             # emits its first camera_init -> body.
-            self._publish_anchor(looked_up)
+            self._publish_anchor(looked_up, model)
 
             cmd = ['ros2', 'launch', self._param('launch_package'), self._param('launch_file'),
                    f'map_file_path:={pcd_path}']

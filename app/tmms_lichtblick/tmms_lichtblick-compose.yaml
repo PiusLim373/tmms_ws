@@ -4,7 +4,15 @@ services:
     container_name: tmms_lichtblick
     ports:
       - "8080:8080"
+    # The image's default is `caddy file-server --listen :8080`; the Caddyfile adds templating
+    # of /layouts/*, so a layout can point at {{.Host}}.
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     volumes:
+      - /home/unitree/.htxgrrt/bin/tmms_lichtblick/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The robot's URDF and meshes, for the layouts' URDF layer: Lichtblick over rosbridge
+      # cannot resolve package:// from /robot_description, so it loads urdf/b2_visual.urdf from
+      # here and fetches the meshes relative to it.
+      - /home/unitree/.htxgrrt/bin/tmms_ws/install/tmms_description/share/tmms_description:/src/packages/tmms_description:ro
       # Served by Caddy at http://<host>:8080/layouts/*.json and pulled in
       # per-page via Lichtblick's ?layoutUrl= param (see MappingPage.jsx /
       # RecordingsPage.jsx), so each page gets its own layout regardless of
