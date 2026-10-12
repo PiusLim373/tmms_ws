@@ -922,13 +922,6 @@ app.post('/api/system/reboot/:target', (req, res) => {
   proxyToRebootManager(res, `/reboot/${target}`, { method: 'POST' })
 })
 
-// ─────────────────────────────────────────────────────────────────────────────────────────
-// C2 pin storage — thin proxy to the tmms_c2 container (app/tmms_c2)
-// ─────────────────────────────────────────────────────────────────────────────────────────
-//
-// Same reasoning as the reboot manager above: the C2 backend binds loopback over plain http, and
-// proxying keeps the C2 tab same-origin over this server's https. Both containers are
-// network_mode: host, so 127.0.0.1 reaches it.
 const C2_BACKEND_URL = process.env.TMMS_C2_URL || 'http://127.0.0.1:3002'
 
 app.use('/api/c2', async (req, res) => {
@@ -941,8 +934,6 @@ app.use('/api/c2', async (req, res) => {
     })
     res.status(upstream.status).type('application/json').send(await upstream.text())
   } catch (err) {
-    // Reachable in normal operation: the C2 container may be stopped or not yet deployed. The
-    // C2 tab shows "storage offline" and keeps retrying, so this must answer rather than hang.
     console.error(`[ui_backend] C2 store ${req.method} ${req.url} failed:`, err.message)
     res.status(503).json({ error: 'C2 store unreachable' })
   }

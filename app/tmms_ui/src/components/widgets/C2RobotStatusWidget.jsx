@@ -15,7 +15,6 @@ const TONE_COLOR = {
   bad: '#F87171',
 }
 
-// Mirrors NavigationPlan.msg's status enum.
 const PLAN_TONE = {
   accepted: 'busy', executing: 'busy', completed: 'ok',
   rejected: 'bad', cancelled: 'warn', errored: 'bad',
@@ -107,7 +106,6 @@ export function C2RobotStatusWidget({
           <div style={{ fontSize: 11, color: '#FBBF24', lineHeight: 1.5 }}>{driveBlocker}</div>
         )}
 
-        {/* Relocalize: Set pose -> click the map -> drag the ring for heading -> Send. */}
         {reloc === 'idle' ? (
           <button
             className="btn-icon"
@@ -148,11 +146,6 @@ export function C2RobotStatusWidget({
           </div>
         )}
 
-        {/* Two ways to send the robot to a Point of Interest or Home. Either one first shows the way on
-            the map, then Send (or Cancel) here — picking a point never draws anything by itself.
-              Go to       only the destination is sent; nav2 plans the whole way itself.
-              Go through  the stops along the operator's links are sent, in order. */}
-        {/* While a sent route is being walked: where the robot is up to. */}
         {walking && !activePlan && (
           <div
             style={{
@@ -268,8 +261,6 @@ export function C2RobotStatusWidget({
         )}
 
         <div style={{ display: 'flex', gap: 6 }}>
-          {/* Stop controls: never disabled by another command in flight. Cancel is always
-              allowed — with no route running it does nothing. */}
           <button className="btn-icon" style={{ ...btn, flex: 1 }} disabled={!live} onClick={onPause}>
             {robot?.paused ? '▶ Unpause' : '⏸ Pause'}
           </button>

@@ -317,7 +317,6 @@ export function C2PointsWidget({
           })}
         </div>
 
-        {/* The Link tool sits with the pin types: one tool at a time. */}
         <button
           disabled={disabled}
           onClick={onToggleLinkMode}

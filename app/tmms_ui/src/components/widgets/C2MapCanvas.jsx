@@ -4,15 +4,9 @@ import { pixelToWorld, worldToPixel } from '../../lib/c2Coords'
 import { displayName, displayNumber, effectiveYaw, HEADING_TYPES } from '../../lib/c2Pins'
 
 const MIN_ZOOM = 0.05
-// The robot's position arrives 5 times a second; the figure glides between updates over this long.
 const GLIDE_MS = 200
-// A jump bigger than this (relocalizing, a new map) is shown at once rather than glided across.
 const GLIDE_MAX_JUMP_M = 2
-// The B2 is drawn to real size, but never smaller than this on screen so it stays visible zoomed out.
 const ROBOT_MIN_PX = 34
-// Top-down render of Pius's B2 model (tmms_description), same model Lichtblick shows. The picture
-// is centred on base_link with x forward to the right, and covers ROBOT_IMG_W_M x ROBOT_IMG_H_M of
-// ground, so it can be drawn to scale. Robot length (nose to rear foot) is about ROBOT_LEN_M.
 const ROBOT_IMG_SRC = '/b2_top.png'
 const ROBOT_IMG_W_M = 1.5
 const ROBOT_IMG_H_M = 0.8
@@ -54,9 +48,6 @@ export function C2MapCanvas({
   const lastPlaceRef = useRef(null)
   const chipRectsRef = useRef(new Map())
 
-  // The robot as drawn: eased towards each new reported pose, so the figure walks smoothly
-  // along the route instead of hopping every 200 ms.
-  // Loaded once; until it arrives (or if it fails) the simple drawn figure is used instead.
   const [robotImg, setRobotImg] = useState(null)
   useEffect(() => {
     const img = new Image()
@@ -225,7 +216,6 @@ export function C2MapCanvas({
     if (drag.kind === 'pan' && !drag.moved) {
       const pt = localPoint(e)
       if (!placingType) {
-        // Lets the page claim an empty-map click first (e.g. a click on a link).
         if (onEmptyClick?.(pt)) return
         return onSelect(null)
       }
@@ -276,26 +266,21 @@ export function C2MapCanvas({
     ctx.lineWidth = 1
     ctx.strokeRect(Math.round(ox) + 0.5, Math.round(oy) + 0.5, Math.round(w), Math.round(h))
 
-    // The point network goes under the robot and the pins, so lines never cross a glyph.
     drawUnder?.(ctx, toScreen)
 
     const ordered = [...pins].sort(
       (a, b) => (a.type === 'simple' ? 0 : 1) - (b.type === 'simple' ? 0 : 1))
 
-    // Map points (from mapping) are numbered P, so they don't shift the operator's POI1, POI2...
     const ownPins = pins.filter((p) => p.source !== 'mapping')
     const chipRects = new Map()
     for (const pin of ordered) {
       const s = toScreen(pin.x, pin.y)
-      // The relocalize marker shows a see-through robot where it is being placed, facing the way
-      // the ring is dragged, so the operator lines the figure up with the real robot.
       if (pin.type === 'pose') drawRobot(ctx, s, pin.yaw ?? 0, scale / info.resolution, c.pose, robotImg, true)
       const color = c[pin.type] ?? c.simple
       const selected = pin.id === selectedId
       const yaw = effectiveYaw(pin)
       if (yaw != null) drawHeadingArrow(ctx, s, yaw, color)
       const fromMap = pin.source === 'mapping'
-      // With names hidden, only the selected point keeps its name.
       const chip = drawPin(ctx, s, pin, color, selected,
         fromMap ? 'P' : displayNumber(pin, ownPins), showNames || selected ? displayName(pin, ownPins) : null)
       if (fromMap) drawMappingRing(ctx, s)
@@ -303,7 +288,6 @@ export function C2MapCanvas({
     }
     chipRectsRef.current = chipRects
 
-    // The robot goes on top of everything, so it is always visible as it walks over points.
     if (shownRobot?.position) {
       drawRobot(ctx, toScreen(shownRobot.position.x, shownRobot.position.y), shownRobot.yaw ?? 0,
         scale / info.resolution, c.robot, robotImg, false)
@@ -342,8 +326,6 @@ function drawPin(ctx, s, pin, color, selected, number, name) {
   return drawAction(ctx, s, color, selected, number, name)
 }
 
-// Frosts what is already drawn under a circle: the map shows through the point, blurred.
-// Works in device pixels, so it is right whatever scale the canvas is drawn at.
 function frostCircle(ctx, s, r) {
   const m = ctx.getTransform()
   ctx.save()
@@ -369,7 +351,6 @@ function drawAction(ctx, s, color, selected, number, name) {
     ctx.fill()
     ctx.globalAlpha = 1
   }
-  // Glass: see-through yellow, a soft shine at the top-left, a thin bright rim.
   ctx.beginPath()
   ctx.arc(0, 0, ACTION_RADIUS, 0, Math.PI * 2)
   ctx.fillStyle = color
@@ -394,7 +375,6 @@ function drawAction(ctx, s, color, selected, number, name) {
   ctx.font = '700 14px Inter, system-ui, sans-serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  // A soft shadow keeps the white number readable through the see-through red.
   ctx.shadowColor = 'rgba(0,0,0,0.6)'
   ctx.shadowBlur = 3
   ctx.fillText(String(number), 0, 0.5)
@@ -492,8 +472,6 @@ function drawHome(ctx, s, color, selected) {
   ctx.fillText('H', 0, 0.5)
   ctx.restore()
 }
-// Marks a point that came with the map (captured while mapping), so it reads differently from
-// the operator's own waypoints.
 function drawMappingRing(ctx, s) {
   ctx.save()
   ctx.beginPath()
@@ -505,8 +483,6 @@ function drawMappingRing(ctx, s) {
   ctx.restore()
 }
 
-// The relocalize marker: a hollow robot ring, so it reads as "the robot goes here" and never as
-// a mission pin.
 function drawPose(ctx, s, color, selected) {
   ctx.save()
   ctx.translate(s.x, s.y)
@@ -564,16 +540,12 @@ function drawRotateHandle(ctx, s, yaw, accent) {
   ctx.stroke()
   ctx.restore()
 }
-// The robot at real size, turned to its heading. Uses the rendered B2 model; `ghost` draws it
-// see-through, for the relocalize marker.
 function drawRobot(ctx, s, yaw, pxPerM, color, img, ghost) {
   if (!img) { drawQuadrupedFallback(ctx, s, yaw, pxPerM, color, ghost); return }
   const k = Math.max(pxPerM, ROBOT_MIN_PX / ROBOT_LEN_M)
   ctx.save()
   ctx.translate(s.x, s.y)
-  // Screen y points down, so a counter-clockwise yaw on the map is a clockwise screen rotation.
   ctx.rotate(-yaw)
-  // Halo in the robot colour: marks it as the live robot (or the marker) against walls and floor.
   ctx.beginPath()
   ctx.ellipse(0, 0, 0.62 * k, 0.36 * k, 0, 0, Math.PI * 2)
   ctx.fillStyle = color
@@ -581,14 +553,11 @@ function drawRobot(ctx, s, yaw, pxPerM, color, img, ghost) {
   ctx.fill()
   ctx.globalAlpha = ghost ? 0.5 : 1
   ctx.imageSmoothingEnabled = true
-  // The picture's top edge is the robot's left (+y), which is screen-up once rotated.
   ctx.drawImage(img, -ROBOT_IMG_W_M / 2 * k, -ROBOT_IMG_H_M / 2 * k, ROBOT_IMG_W_M * k, ROBOT_IMG_H_M * k)
   drawFrontTriangle(ctx, k, color)
   ctx.restore()
 }
 
-// A triangle just ahead of the head, pointing the way the robot faces, so the front is obvious at
-// any zoom. Drawn in the robot's (already rotated) frame; kept a readable size when zoomed out.
 function drawFrontTriangle(ctx, k, color) {
   const tip = Math.max(0.78 * k, 0.62 * k + 14)
   const base = Math.max(0.62 * k, tip - Math.max(0.16 * k, 12))
@@ -606,20 +575,16 @@ function drawFrontTriangle(ctx, k, color) {
   ctx.stroke()
 }
 
-// The B2 seen from above, drawn by hand: used only until the rendered picture has loaded.
-// Robot frame in metres: x forward, y left.
 function drawQuadrupedFallback(ctx, s, yaw, pxPerM, color, ghost) {
   const k = Math.max(pxPerM, ROBOT_MIN_PX / 1.1)
   ctx.save()
   if (ghost) ctx.globalAlpha = 0.5
   ctx.translate(s.x, s.y)
-  // Screen y points down, so a counter-clockwise yaw on the map is a clockwise screen rotation.
   ctx.rotate(-yaw)
   ctx.scale(k, -k)
   ctx.lineJoin = 'round'
   ctx.lineCap = 'round'
 
-  // Soft halo so the figure reads against black walls and white floor alike.
   ctx.beginPath()
   ctx.ellipse(0, 0, 0.62, 0.36, 0, 0, Math.PI * 2)
   ctx.fillStyle = color
@@ -627,7 +592,6 @@ function drawQuadrupedFallback(ctx, s, yaw, pxPerM, color, ghost) {
   ctx.fill()
   ctx.globalAlpha = 1
 
-  // Legs: hip -> foot, front pair angled forward, rear pair back.
   const legs = [[0.30, 0.15, 0.40, 0.26], [0.30, -0.15, 0.40, -0.26], [-0.30, 0.15, -0.40, 0.26], [-0.30, -0.15, -0.40, -0.26]]
   ctx.strokeStyle = '#1F2937'
   ctx.lineWidth = 0.09
@@ -644,7 +608,6 @@ function drawQuadrupedFallback(ctx, s, yaw, pxPerM, color, ghost) {
     ctx.fill()
   }
 
-  // Body.
   ctx.beginPath()
   ctx.roundRect(-0.42, -0.16, 0.84, 0.32, 0.08)
   ctx.fillStyle = color
@@ -653,7 +616,6 @@ function drawQuadrupedFallback(ctx, s, yaw, pxPerM, color, ghost) {
   ctx.lineWidth = 0.035
   ctx.stroke()
 
-  // Head at the front, so the facing is obvious.
   ctx.beginPath()
   ctx.roundRect(0.40, -0.11, 0.16, 0.22, 0.05)
   ctx.fillStyle = '#FFFFFF'
@@ -662,7 +624,6 @@ function drawQuadrupedFallback(ctx, s, yaw, pxPerM, color, ghost) {
   ctx.lineWidth = 0.03
   ctx.stroke()
 
-  // Z1 arm mount on the back.
   ctx.beginPath()
   ctx.arc(-0.12, 0, 0.07, 0, Math.PI * 2)
   ctx.fillStyle = '#1F2937'

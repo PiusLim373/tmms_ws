@@ -21,8 +21,6 @@ import { loadUploadedMap } from './../lib/c2MapFile'
 import { subscribeNavPlan } from './../lib/c2NavPath'
 import { useC2GraphStore } from '../hooks/useC2GraphStore'
 import { cancelNavGoal, setQuadrupedPaused, subscribe } from '../services/rosbridge'
-// Robot commands and the scan overlay come from Pius's navplan
-// tester as-is. It was built to be reused by this page; none of those files are changed here.
 import {
   nextNavplanId, relocalize, sendNavigationPlan, subscribeLaserScan,
 } from '../navplan_tester/lib/navplanRos'
@@ -32,33 +30,21 @@ const MIN_SPAN = 0.12
 const ZOOM_STEP = 1.4
 const STATUS_TOPIC = '/quadruped_main_status'
 const STATUS_TYPE = 'tmms_msgs/QuadrupedMainStatus'
-// A scan older than this is treated as lost and no longer drawn.
 const SCAN_TIMEOUT_MS = 2000
 const PLAN_LOG_LENGTH = 20
-// A click within this many screen pixels of a link selects it.
 const LINK_HIT_PX = 7
 const NO_LINKS = []
 const isMapPoint = (id) => typeof id === 'string' && id.startsWith('poi_')
-// The graph last opened on each map, so it opens again by itself next time.
 const LAST_GRAPH_KEY = 'tmms.c2.lastGraph'
-// Map view toggles (show names) are remembered per browser.
 const VIEW_PREFS_KEY = 'tmms.c2.mapView'
 function loadViewPrefs() {
   try { return { names: JSON.parse(localStorage.getItem(VIEW_PREFS_KEY) ?? '{}').names ?? true } }
   catch { return { names: true } }
 }
-// How long a hover card stays after the pointer leaves the point, so it can be moved onto the card.
 const HOVER_CARD_LINGER_MS = 250
-// Every point can be linked: Points of Interest, Simple waypoints and Home.
 const canLink = (p) => Boolean(p)
-// How close the robot must come to a stop for it to count as reached. Matches nav2's
-// RemovePassedGoals radius, which drops a stop once the robot is this close.
 const STOP_REACHED_M = 0.7
 const FINAL_PLAN_STATES = new Set(['completed', 'cancelled', 'errored', 'rejected'])
-// robot_mode values where the robot is down, with how they read to the operator. nav2 doesn't
-// stand the robot up (only Unpause runs balance_stand), so a route sent in one of these is
-// accepted and "executing" while the robot never moves. Only the plainly-down modes: the B2
-// reports `pose` while standing ready after balance_stand, so the standing modes are let through.
 const NOT_STANDING = {
   damping: 'lying limp (damping)',
   lie_down: 'lying down',
@@ -149,8 +135,6 @@ export function C2Page() {
   const robotMap = statusLive ? robot?.currentMap || null : null
   const robotOnThisMap = Boolean(robotMap && mapName && robotMap === mapName)
 
-  // After a refresh nothing is selected, but the robot still has a map loaded. Show that one —
-  // once, and only if the operator hasn't picked a map, so this never overrides a choice.
   const restoredMap = useRef(false)
   useEffect(() => {
     if (restoredMap.current || mapName || !storeMaps || !robotMap) return
@@ -160,17 +144,13 @@ export function C2Page() {
 
   const { graphs, updateGraphs, status: storeStatus } = useC2GraphStore()
   const [graph, setGraph] = useState(null)
-  // The map a graph was last opened for by itself (see "open the last graph on start").
   const autoOpenedFor = useRef(null)
   const [editing, setEditing] = useState(false)
   const [graphPanel, setGraphPanel] = useState(null)
 
   const [pins, setPins] = useState([])
-  // The operator's links ("idA|idB" keys). Saved with the graph, alongside the pins. Routes only
-  // ever use these: two points are connected only if the operator linked them.
   const [linkKeys, setLinkKeys] = useState(NO_LINKS)
   const [selectedLink, setSelectedLink] = useState(null)
-  // Link tool: on while the operator is linking points; linkStart is the first point clicked.
   const [linkMode, setLinkMode] = useState(false)
   const [linkStart, setLinkStart] = useState(null)
   const [selectedId, setSelectedId] = useState(null)
@@ -237,8 +217,6 @@ export function C2Page() {
     applyPins(restored, { selection: stillThere ? selectedId : null })
   }, [applyPins, selectedId])
 
-  // Copies the open graph's pins back into the saved list. Skipped when nothing changed (e.g.
-  // just after loading), so opening a graph never counts as an edit or triggers a save.
   useEffect(() => {
     if (!graph) return
     updateGraphs((prev) => {
@@ -267,10 +245,6 @@ export function C2Page() {
     setPlacingType(null)
   }, [resetHistory])
 
-  // -- relocalize ------------------------------------------------------------
-  // 'idle' -> 'placing' -> 'placed' -> 'sending' -> back to 'idle' on success, or 'placed' on
-  // failure so the marker can be nudged and resent. The marker is not a graph pin: it is never
-  // saved and never part of a route.
   const [reloc, setReloc] = useState('idle')
   const [posePin, setPosePin] = useState(null)
 
@@ -285,7 +259,6 @@ export function C2Page() {
     setMapName(name)
     setMapError(null)
     closeGraph()
-    // The marker is a position on the old map.
     cancelReloc()
   }, [closeGraph, cancelReloc])
 
@@ -326,23 +299,19 @@ export function C2Page() {
     setGraphPanel(null)
   }, [graphs, resetHistory])
 
-  // -- open the last graph on start ---------------------------------------------
-  // When a map is shown with no graph open, a graph opens by itself (view only): the one last
-  // opened on that map in this browser, else the one on that map changed most recently. Picking
-  // a map does it again; closing a graph with ✕ doesn't reopen it.
   useEffect(() => {
     if (!graph || !mapName) return
     try {
       const last = JSON.parse(localStorage.getItem(LAST_GRAPH_KEY) ?? '{}')
       localStorage.setItem(LAST_GRAPH_KEY, JSON.stringify({ ...last, [mapName]: graph.id }))
-    } catch { /* not remembered */ }
+    } catch {}
   }, [graph, mapName])
   useEffect(() => {
     if (!mapName || graph || storeStatus === 'loading' || storeStatus === 'offline' || autoOpenedFor.current === mapName) return
     autoOpenedFor.current = mapName
     const onMap = graphs.filter((g) => g.map === mapName)
     let lastId = null
-    try { lastId = JSON.parse(localStorage.getItem(LAST_GRAPH_KEY) ?? '{}')[mapName] ?? null } catch { /* none */ }
+    try { lastId = JSON.parse(localStorage.getItem(LAST_GRAPH_KEY) ?? '{}')[mapName] ?? null } catch {}
     const newest = onMap.reduce((a, g) => (!a || (g.updatedAt ?? '') > (a.updatedAt ?? '') ? g : a), null)
     const pick = onMap.find((g) => g.id === lastId) ?? newest
     if (pick) loadGraph(pick.id)
@@ -412,8 +381,6 @@ export function C2Page() {
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 })
   const [hover, setHover] = useState(null)
   const [viewMode, setViewMode] = useState('2D')
-  // Both: the ref is what the fit effect reads without re-running, the state gives the overlay
-  // canvas its real width/height.
   const sizeRef = useRef({ width: 0, height: 0 })
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
   const fittedFor = useRef(null)
@@ -459,12 +426,6 @@ export function C2Page() {
 
   const canEdit = Boolean(graph) && editing
 
-  // -- points that came with the map -----------------------------------------
-  // Pius's points of interest, captured while mapping and copied into the 2D map's yaml.
-  // /api/maps2d returns them as `pois`, yaw in DEGREES in the map frame. Mapping only ever adds
-  // points, it never edits them, so C2 copies each one into the open graph the first time it sees
-  // it (saved to the database with the graph's pins). From then on the graph's copy is the one
-  // used: it can be moved and turned in C2, but not renamed or deleted.
   const fileMapPoints = useMemo(() => (selectedMap?.pois ?? [])
     .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
     .map((p) => ({
@@ -479,8 +440,6 @@ export function C2Page() {
       poi: { description: p.description ?? '', snapshots: p.snapshots ?? [], timestamp: p.timestamp ?? '' },
     })), [selectedMap])
 
-  // Copies in the map's points this graph doesn't have yet. Undo/redo states get them too, so
-  // undoing never takes them back out.
   useEffect(() => {
     if (!graph || fileMapPoints.length === 0) return
     const withMapPoints = (list) => {
@@ -501,16 +460,13 @@ export function C2Page() {
   const ownPins = useMemo(() => pins.filter((p) => p.source !== 'mapping'), [pins])
   const allPoints = useMemo(() => [...mapPoints, ...ownPins], [mapPoints, ownPins])
 
-  // -- canvas: every point plus the relocalize marker --------------------------
   const [viewPrefs, setViewPrefs] = useState(loadViewPrefs)
   const toggleViewPref = useCallback((key) => setViewPrefs((prev) => {
     const next = { ...prev, [key]: !prev[key] }
-    try { localStorage.setItem(VIEW_PREFS_KEY, JSON.stringify(next)) } catch { /* not remembered */ }
+    try { localStorage.setItem(VIEW_PREFS_KEY, JSON.stringify(next)) } catch {}
     return next
   }), [])
 
-  // -- the point network -------------------------------------------------------
-  // Built from the map picture once per map; every "is this line clear?" after that is a lookup.
   const grid = useMemo(() => (image && info ? buildClearanceGrid(image, info) : null), [image, info])
   const graphPoints = useMemo(
     () => allPoints.map((p) => ({ ...p, name: displayName(p, pins) })), [allPoints, pins])
@@ -522,11 +478,6 @@ export function C2Page() {
     setSelectedLink(null)
   }, [])
 
-  // Clicking a point: normally selects it. With the Link tool on, the first click picks the start
-  // and each next click links it to the previous one, so A, B, C links A-B and B-C. Clicking a
-  // pair that is already linked removes that link.
-  // The photo viewer of one of Pius's points. Opened from its hover card, never by clicking the
-  // point: a click on the point only selects it, ready for Go.
   const [viewerId, setViewerId] = useState(null)
   const selectPoint = useCallback((id) => {
     setSelectedLink(null)
@@ -547,14 +498,11 @@ export function C2Page() {
     setPlacingType(null)
   }, [])
 
-  // Arming a pin type ends linking, and the other way round: one tool at a time.
   const armPinType = useCallback((type) => {
     setPlacingType(type)
     if (type) { setLinkMode(false); setLinkStart(null) }
   }, [])
 
-  // A click on empty map: pick the nearest link within reach, if any. While linking, an empty
-  // click just drops the half-made link.
   const toScreenPt = useCallback((p) => {
     const g = worldToPixel(p.x, p.y, info)
     return { x: view.x + g.x * view.scale, y: view.y + g.y * view.scale }
@@ -590,7 +538,6 @@ export function C2Page() {
   const handlePlace = useCallback((type, world) => {
     if (type === POSE_TYPE) {
       setPosePin({ id: POSE_ID, type: POSE_TYPE, x: world.x, y: world.y, yaw: 0, headingSet: false, label: '' })
-      // Selected so the rotate ring shows straight away — setting the heading is the next step.
       setSelectedId(POSE_ID)
       setReloc('placed')
       return
@@ -598,7 +545,6 @@ export function C2Page() {
     addPin(type, world)
   }, [addPin])
 
-  // The marker stays movable while the graph is locked; graph pins only move while editing.
   const handleMovePin = useCallback((id, world) => {
     if (id === POSE_ID) setPosePin((p) => (p ? { ...p, x: world.x, y: world.y } : p))
     else if (canEdit) movePin(id, world)
@@ -609,31 +555,20 @@ export function C2Page() {
     else if (canEdit) setYaw(id, yaw)
   }, [canEdit, setYaw])
 
-  // -- robot commands ----------------------------------------------------------
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)
-  // The route is only shown once the operator presses Go: then it is drawn on the map and
-  // confirmed (or cancelled) in the Robot panel. Placing or picking points never draws it.
-  // null, 'to' (nav2 plans its own way to the destination) or 'through' (follow the links).
   const [routeMode, setRouteMode] = useState(null)
   const finish = useCallback((ok, message) => { setBusy(false); setResult({ ok, message }) }, [])
 
-  // Why the robot can't be driven from this map at all. Uploaded maps live only in this
-  // browser, so the robot has no file to load them from.
   const driveBlocker = !selectedMap ? 'Load a map to drive the robot.'
     : selectedMap.source === 'upload'
       ? `${selectedMap.name} was uploaded to this browser only — the robot doesn't have it. Pick a map from the store.`
       : null
-  // Blocks sending a route (not relocalize) until the robot is standing.
   const notStanding = statusLive ? NOT_STANDING[robot?.mode] : null
   const standBlocker = notStanding
     ? `The robot is ${notStanding}. Stand it up first (Dashboard → WALK, or the remote), then send the route.`
     : null
 
-  // -- going to a point ----------------------------------------------------------
-  // The selected point is the destination. The way there: the robot walks by itself to the point
-  // nearest it, then follows links to the destination, shortest total distance.
-  // Rounded to 5 cm so the 5 Hz status doesn't replan on every tiny wobble of the estimate.
   const rx = robotOnThisMap && robot?.position ? Math.round(robot.position.x * 20) / 20 : null
   const ry = robotOnThisMap && robot?.position ? Math.round(robot.position.y * 20) / 20 : null
   const robotPos = useMemo(() => (rx == null ? null : { x: rx, y: ry }), [rx, ry])
@@ -641,7 +576,6 @@ export function C2Page() {
     ? graphPoints.find((p) => p.id === selectedId) ?? null
     : null
 
-  // Checks shared by both ways of going: is this somewhere the robot can be sent at all?
   const destReason = useMemo(() => {
     if (!target) return 'Select a Point of Interest or Home on the map to go there.'
     if (!grid) return 'The map is still loading.'
@@ -652,21 +586,15 @@ export function C2Page() {
       return `${target.name} is on a wall or in unmapped (grey) space. Move it onto white floor.`
     }
     if (!robotPos) return 'The robot is not on this map. Relocalize it here first.'
-    // nav2 would report this as reached instantly.
     if (Math.hypot(robotPos.x - target.x, robotPos.y - target.y) < 0.5) return `The robot is already at ${target.name}.`
     return null
   }, [target, grid, info, robotPos])
 
-  // Go through: follow the operator's links. Any linked point can be passed through on the way —
-  // a Point of Interest or Home does everything a Simple waypoint does, and can also be a
-  // destination. The robot starts at whichever point it can reach first.
   const plan = useMemo(() => {
     if (destReason) return null
     return planRoute({ points: graphPoints, links, robot: robotPos, targetId: target.id, grid, info })
   }, [destReason, target, grid, info, graphPoints, links, robotPos])
 
-  // Go to: only the destination is sent and nav2 plans the whole way itself. Nothing is drawn
-  // before Send — C2 does not guess nav2's path. Once sent, nav2's real path (/plan) is drawn.
   const directPlan = useMemo(() => {
     if (destReason) return null
     return {
@@ -682,16 +610,10 @@ export function C2Page() {
   const goBlocker = driveBlocker ? null : destReason ?? (plan && !plan.ok ? plan.reason : null)
   const activePlan = routeMode === 'to' ? directPlan : routeMode === 'through' && plan?.ok ? plan : null
 
-  // Stated rather than silently dropped: the robot's route message carries positions and
-  // headings only, so these pin settings don't reach it yet.
   const routeNote = activePlan?.stops.some((p) => p.action?.dwellSeconds > 0)
     ? 'Dwell times are not sent yet — the robot drives through without stopping.'
     : null
 
-  // Any change of destination, or going back to placing points, drops the preview — except when
-  // Return home just picked Home, which opens the preview for it straight away, in the way the
-  // operator chose ('to' or 'through'). If that way can't reach Home, nothing opens and the
-  // reason shows under the Go buttons.
   const autoPreviewRef = useRef(null)
   const openPreviewFor = useCallback((mode) => {
     if (mode === 'through' && plan?.ok && !goBlocker) setRouteMode('through')
@@ -704,8 +626,6 @@ export function C2Page() {
     if (mode) openPreviewFor(mode); else setRouteMode(null)
   }, [selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Return home: select Home and show the way there, the same two ways as any destination:
-  // 'to' (nav2 plans its own way) or 'through' (follow the links).
   const homePin = pins.find((p) => p.type === 'home') ?? null
   function handleReturnHome(mode) {
     if (!homePin || standBlocker) return
@@ -715,13 +635,8 @@ export function C2Page() {
     else { autoPreviewRef.current = mode; setSelectedId(homePin.id) }
   }
 
-  // -- the route the robot is walking ------------------------------------------
-  // Kept on the map after Send until the robot reports the route finished, so the operator can
-  // watch the robot follow it. `reached` counts stops already passed; their legs turn grey.
   const [walking, setWalking] = useState(null)
 
-  // nav2's real path for a Go-to route, straight from the robot. nav2 only plans once it has the
-  // goal, so this fills in after Send and updates whenever nav2 re-plans.
   const [navPath, setNavPath] = useState(null)
   const walkingTo = walking?.mode === 'to'
   useEffect(() => {
@@ -734,7 +649,6 @@ export function C2Page() {
     const pos = robot?.position
     if (!walking || !pos) return
     let reached = walking.reached
-    // The robot can pass a stop between two status updates, so check from the far end back.
     for (let k = walking.stops.length - 1; k >= reached; k--) {
       if (Math.hypot(walking.stops[k].x - pos.x, walking.stops[k].y - pos.y) < STOP_REACHED_M) { reached = k + 1; break }
     }
@@ -744,14 +658,11 @@ export function C2Page() {
 
   const canvasPins = useMemo(() => (posePin ? [...allPoints, posePin] : allPoints), [allPoints, posePin])
   const viewerPoint = mapPoints.find((p) => p.id === viewerId) ?? null
-  // The map point under the pointer, for its hover card. Same reach as clicking it.
   const hoveredMapPoint = useMemo(() => {
     if (!hover || !info || viewerId) return null
     const h = toScreenPt(hover)
     return mapPoints.find((p) => Math.hypot(toScreenPt(p).x - h.x, toScreenPt(p).y - h.y) <= 16) ?? null
   }, [hover, info, viewerId, mapPoints, toScreenPt])
-  // The card shown: follows the hovered point, but lingers a moment after the pointer leaves it,
-  // and stays while the pointer is on the card, so the card itself can be clicked.
   const [cardId, setCardId] = useState(null)
   const onCardRef = useRef(false)
   useEffect(() => {
@@ -783,7 +694,6 @@ export function C2Page() {
     })
   }, [graphPoints, links, selectedLink, linkMode, linkStart, hover, activePlan, walking, navPath])
 
-  // Linking only makes sense while the graph is being edited.
   useEffect(() => { if (!canEdit) { setLinkMode(false); setLinkStart(null) } }, [canEdit])
 
   function handleSendReloc() {
@@ -810,11 +720,7 @@ export function C2Page() {
     if (driveBlocker || standBlocker || !activePlan) return
     const navplan = {
       navplanId: nextNavplanId(),
-      // The map the pins were drawn on, not the robot's. The robot refuses the route when it is
-      // on another map — tagging it with the robot's map instead would pass that check and
-      // drive to coordinates from the wrong map.
       mapName,
-      // Only the last heading is enforced by the robot; the stops before it are passed through.
       waypoints: activePlan.stops.map((p) => ({ x: p.x, y: p.y, yaw: effectiveYaw(p) })),
     }
     const sent = { id: navplan.navplanId, name: target?.name, mode: routeMode, stops: activePlan.stops,
@@ -826,12 +732,8 @@ export function C2Page() {
       (e) => finish(false, String(e)))
   }
 
-  // Pause and Cancel are the stop controls, so they never wait on `busy`: a route send can sit
-  // for up to 20 s and a relocalize for up to 60 s, and the operator must be able to stop the
-  // robot during either.
   function handlePause() {
     const unpausing = Boolean(robot?.paused)
-    // Unpausing hands the robot to navigation and makes it stand up, so it is confirmed.
     if (unpausing && !window.confirm('Unpause?\n\nThe robot will stand up (balance stand) and navigation takes control. Manual teleop stops.')) return
     setResult(null)
     setQuadrupedPaused(!unpausing,
@@ -846,9 +748,6 @@ export function C2Page() {
       (e) => setResult({ ok: false, message: String(e) }))
   }
 
-  // -- route log ---------------------------------------------------------------
-  // /curr_navplan fires on every status change of a route, so this catches transitions the
-  // 5 Hz status topic can skip.
   const [planLog, setPlanLog] = useState([])
   useEffect(() => subscribe('/curr_navplan', 'tmms_msgs/NavigationPlan', (m) => {
     setPlanLog((prev) => [
@@ -857,7 +756,6 @@ export function C2Page() {
     ])
   }), [])
 
-  // The route stops being shown once the robot reports it finished, from either source.
   useEffect(() => {
     if (!walking) return
     const last = planLog.findLast?.((e) => e.id === walking.id)
@@ -865,9 +763,6 @@ export function C2Page() {
     if ((last && FINAL_PLAN_STATES.has(last.status)) || FINAL_PLAN_STATES.has(status)) setWalking(null)
   }, [planLog, robot?.navplanId, robot?.navplanStatus, walking]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // -- lidar overlay -----------------------------------------------------------
-  // What the robot's laser sees, drawn on the map. If relocalizing worked, the red dots sit
-  // on the walls.
   const [scan, setScan] = useState(null)
   const [scanLive, setScanLive] = useState(false)
   const lastScanAt = useRef(0)
@@ -911,7 +806,6 @@ export function C2Page() {
       if (isTyping(e.target)) return
 
       if (e.key === 'Escape') {
-        // Not while sending: the marker has to stay so a failed reply can be retried.
         if (reloc === 'placing' || reloc === 'placed') cancelReloc()
         setPlacingType(null)
         setLinkMode(false)
@@ -923,7 +817,6 @@ export function C2Page() {
         return
       }
 
-      // Points that came with the map can't be deleted from C2.
       if ((e.key === 'Delete' || e.key === 'Backspace') && isMapPoint(selectedId)) return
 
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId === POSE_ID) {
@@ -1013,8 +906,6 @@ export function C2Page() {
             view={view}
             size={canvasSize}
             robot={robotOnThisMap ? robot : null}
-            // No route lines while marking: placing a pin is not choosing a route. The route
-            // is only decided at send time (Route Order today; a path search later).
             waypoints={[]}
             scan={scanLive ? scan : null}
             ghost={null}

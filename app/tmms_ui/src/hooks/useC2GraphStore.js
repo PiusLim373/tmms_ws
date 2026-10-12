@@ -4,13 +4,6 @@ import { listGraphs, saveGraph } from '../lib/c2Store'
 const DEBOUNCE_MS = 600
 const RETRY_MS = 3000
 
-// Owns the list of mission graphs and keeps it saved.
-//
-// Every change goes through updateGraphs, which marks the graphs it touched as dirty. A short
-// debounce later the dirty ones are PUT to the store; a failed save stays dirty and is retried
-// every RETRY_MS until it lands, so nothing is lost while the store is briefly down.
-//
-// status: 'loading' | 'saved' | 'saving' | 'retrying' | 'offline'
 export function useC2GraphStore() {
   const [graphs, setGraphs] = useState([])
   const [loaded, setLoaded] = useState(false)
@@ -18,7 +11,6 @@ export function useC2GraphStore() {
   const [kick, setKick] = useState(0)
 
   const graphsRef = useRef(graphs)
-  // id -> version. A save only clears its entry if no newer edit arrived while it was in flight.
   const dirtyRef = useRef(new Map())
   const versionRef = useRef(0)
   const inFlightRef = useRef(false)
@@ -26,8 +18,6 @@ export function useC2GraphStore() {
 
   useEffect(() => { graphsRef.current = graphs }, [graphs])
 
-  // Initial load. Retried until the store answers: a graph made while it was down is kept and
-  // merged in, and saving waits for the load so it can never overwrite what the store holds.
   useEffect(() => {
     let stopped = false
     let timer = null
@@ -67,8 +57,6 @@ export function useC2GraphStore() {
     setStatus((s) => (s === 'retrying' ? s : 'saving'))
 
     const timer = setTimeout(async () => {
-      // One flush at a time, so two saves of the same graph can never land out of order.
-      // Whatever changed meanwhile is still dirty and is picked up by the kick below.
       if (inFlightRef.current) return
       inFlightRef.current = true
       let failed = false
@@ -98,7 +86,6 @@ export function useC2GraphStore() {
     return () => clearTimeout(timer)
   }, [graphs, loaded, kick])
 
-  // Leaving the tab or closing the page would otherwise drop an edit still inside the debounce.
   useEffect(() => {
     const flushNow = () => {
       for (const id of dirtyRef.current.keys()) {

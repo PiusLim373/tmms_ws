@@ -1,20 +1,10 @@
 import { useEffect, useState } from 'react'
 import { camOfSnapshot, formatPoiTime, map2dSnapshotUrl, POI_CAMS } from '../../lib/poi'
 
-// Photos of a point that came with the map, the same way the navplan tester shows them:
-// a hover card next to the marker, and a viewer opened by clicking it.
-//
-// `point` is a C2 map point: { label, x, y, poi: { description, snapshots, timestamp } }.
-
 const camTitle = (f) => POI_CAMS.find((c) => c.key === camOfSnapshot(f))?.title ?? f
 
-// Next to the marker, flipped to the other side when it would run off the map. Clicking it opens
-// the viewer.
-// props: point, at (screen px in the map), mapName, bounds ({ width, height } of the map area),
-//        onOpen(), onPointerEnter(), onPointerLeave()
 export function C2PoiHoverCard({ point, at, mapName, bounds, onOpen, onPointerEnter, onPointerLeave }) {
   const width = 300
-  // Close to the marker, so the pointer can cross the gap before the card goes.
   const left = at.x + 18 + width > bounds.width ? at.x - 18 - width : at.x + 18
   const top = Math.max(8, Math.min(at.y - 20, bounds.height - 230))
   const { description, snapshots } = point.poi
@@ -62,8 +52,6 @@ export function C2PoiHoverCard({ point, at, mapName, bounds, onOpen, onPointerEn
   )
 }
 
-// One photo large (click it for full size, again to fit), the others as thumbnails below.
-// props: point, mapName, onClose()
 export function C2PoiViewer({ point, mapName, onClose }) {
   const [shown, setShown] = useState(null)
   const [fullSize, setFullSize] = useState(false)

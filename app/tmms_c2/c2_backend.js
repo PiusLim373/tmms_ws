@@ -1,13 +1,3 @@
-// C2 storage: saves mission graphs (a named set of pins on one map) in MongoDB.
-//
-// Runs in its own container next to MongoDB (tmms_c2-compose.yaml). It binds loopback only and
-// the browser never reaches it directly — ui_backend proxies /api/c2 here, so the dashboard
-// stays same-origin over its own https.
-//
-// Pins are stored exactly as the C2 tab holds them: metres in the map frame, never pixels.
-// Deletion is soft, for chain of custody: a pin removed from a graph is moved to that graph's
-// deletedPins with a deletedAt stamp, never erased.
-
 import express from 'express'
 import { MongoClient } from 'mongodb'
 
@@ -16,20 +6,14 @@ const HOST = process.env.HOST || '127.0.0.1'
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://127.0.0.1:27017'
 const DB_NAME = process.env.C2_DB || 'tmms_c2'
 
-// Same shapes the C2 tab generates. Anchored, so an id can never smuggle a Mongo operator.
 const GRAPH_ID_RE = /^g_[a-z0-9]{1,32}$/
-// pin_... for the operator's own pins, poi_<n> for a point copied in from mapping.
 const PIN_ID_RE = /^(pin_[a-z0-9_]{1,64}|poi_\d{1,9})$/
 const NAME_RE = /^[A-Za-z0-9_]{1,128}$/
 const PIN_TYPES = new Set(['action', 'simple', 'home'])
 const MAX_PINS = 2000
-// A link is the two point ids it joins, sorted, with "|" between: an operator pin (pin_...) or a point
-// that came with the map (poi_<n>).
 const LINK_KEY_RE = /^(pin_[a-z0-9_]{1,64}|poi_\d{1,9})\|(pin_[a-z0-9_]{1,64}|poi_\d{1,9})$/
 const MAX_LINKS = 10000
 
-// Fails fast (3 s) when Mongo is down, so a request answers 503 instead of hanging. The driver
-// reconnects by itself, so nothing here has to retry.
 const client = new MongoClient(MONGO_URL, { serverSelectionTimeoutMS: 3000 })
 const graphs = client.db(DB_NAME).collection('graphs')
 
@@ -76,8 +60,6 @@ app.get('/graphs', async (_req, res) => {
   }
 })
 
-// Upsert. The client sends the whole graph every time; the diff against what is stored is
-// what tells us which pins were deleted.
 app.put('/graphs/:id', async (req, res) => {
   const { id } = req.params
   const { name, map, pins, links = [] } = req.body ?? {}

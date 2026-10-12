@@ -1,33 +1,14 @@
-// The C2 point network and the shortest way through it.
-//
-// Points are nodes. Links are drawn by the operator: two points are connected only if the
-// operator linked them. The shortest way to a destination is found over those links (Dijkstra).
-//
-// Links say where the robot is ALLOWED to go, not the exact line it walks: C2 sends the stops,
-// and the robot's own planner (nav2) works out the real path between each stop and the next,
-// curving round obstacles. A link is checked against the map only to warn when it crosses a
-// wall, so the operator knows the robot will have to find its own way round there.
-
 import { worldToPixel } from './c2Coords'
 
-// About half the B2's width plus a margin.
 export const CLEARANCE_M = 0.35
-// map_server reads a pixel as free when occ = (255 - p) / 255 < free_thresh. ui_backend writes
-// free_thresh 0.15, so p > 216.75 is free; obstacle (0) and unknown (205) are both below it.
 const FREE_MIN = 217
-// Sampling step along a line, in pixels.
 const STEP_PX = 0.5
-// The curved search: grid cell size, how much longer than straight a curve may be, and how far
-// past the two points' bounding box it may wander.
 const CURVE_CELL_M = 0.05
 export const MAX_CURVE_RATIO = 1.5
 const CURVE_MARGIN_M = 1.5
 
 export const linkKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`)
 
-// Distance, in pixels, from every pixel to the nearest pixel the robot cannot stand on
-// (obstacle, unknown, or off the map). One forward and one backward chamfer pass, so it is
-// computed once per map and every line check after that is a lookup.
 export function buildClearanceGrid(image, info) {
   const { width, height } = info
   const canvas = document.createElement('canvas')
@@ -44,7 +25,6 @@ export function buildClearanceGrid(image, info) {
   }
 
   const D = Math.SQRT2
-  // Off the map counts as blocked, so a neighbour outside the grid contributes distance 0.
   const at = (x, y) => (x < 0 || y < 0 || x >= width || y >= height ? 0 : dist[y * width + x])
 
   for (let y = 0; y < height; y++) {
@@ -64,7 +44,6 @@ export function buildClearanceGrid(image, info) {
   return { width, height, dist }
 }
 
-// Room around a point, in metres. 0 means the point itself is on a wall, unknown, or off the map.
 export function clearanceAt(p, grid, info) {
   const q = worldToPixel(p.x, p.y, info)
   const x = Math.floor(q.x)
@@ -73,9 +52,6 @@ export function clearanceAt(p, grid, info) {
   return grid.dist[y * grid.width + x] * info.resolution
 }
 
-// True when the robot can walk the straight line a -> b. The full clearance is required along
-// the middle of the line; near each end it tapers down to "the end point itself is free", so a
-// point marked close to a wall (where the evidence is) can still be reached.
 export function lineIsClear(a, b, grid, info, clearanceM = CLEARANCE_M) {
   const pa = worldToPixel(a.x, a.y, info)
   const pb = worldToPixel(b.x, b.y, info)
@@ -93,7 +69,6 @@ export function lineIsClear(a, b, grid, info, clearanceM = CLEARANCE_M) {
   return true
 }
 
-// Small binary min-heap of [priority, value], for the curved search.
 function heapPush(h, item) {
   h.push(item)
   let i = h.length - 1
@@ -124,15 +99,6 @@ function heapPop(h) {
   return top
 }
 
-// The shortest curved way from a to b through open floor with room for the robot:
-// { len (metres), path: [{x, y}, ...] }, or null if there is none within maxRatio × the
-// straight distance.
-//
-// A* over a grid of CURVE_CELL_M squares, kept to a box around the two points. A square is
-// walkable when the map pixel at its centre has the full clearance, except near either end,
-// where the requirement tapers exactly as in lineIsClear so points marked beside a wall can
-// still be reached. This is the same kind of search the robot's own planner (nav2) does, so a
-// pair it connects is a pair the robot can actually walk between.
 export function curvedPath(a, b, grid, info, {
   clearanceM = CLEARANCE_M, maxRatio = MAX_CURVE_RATIO, marginM = CURVE_MARGIN_M,
 } = {}) {
@@ -163,7 +129,7 @@ export function curvedPath(a, b, grid, info, {
   const idx = (c, r) => r * cols + c
   const g = new Float32Array(cols * rows).fill(Infinity)
   const parent = new Int32Array(cols * rows).fill(-1)
-  const state = new Uint8Array(cols * rows) // 0 unknown, 1 walkable, 2 blocked, 3 closed
+  const state = new Uint8Array(cols * rows)
   const h = (c, r) => {
     const dx = Math.abs(c - gc)
     const dy = Math.abs(r - gr)
@@ -182,7 +148,6 @@ export function curvedPath(a, b, grid, info, {
     const c = i % cols
     const r = (i - c) / cols
     if (c === gc && r === gr) {
-      // Walk the parents back, keeping every few cells: enough to draw the bend smoothly.
       const cells = []
       for (let k = i; k !== -1; k = parent[k]) cells.push(k)
       cells.reverse()
@@ -192,7 +157,6 @@ export function curvedPath(a, b, grid, info, {
         path.push(centre(cc, (cells[n] - cc) / cols))
       }
       path.push({ x: b.x, y: b.y })
-      // The cell walk adds a little to the true length; never report less than straight.
       return { len: Math.max(straight, g[i]), path }
     }
     for (const [dc, dr, k] of STEPS) {
@@ -214,8 +178,6 @@ export function curvedPath(a, b, grid, info, {
   return null
 }
 
-// How the robot gets from a to b: straight when the line is clear, otherwise the curved way.
-// { len, path, curved } or null.
 export function wayBetween(a, b, grid, info, opts) {
   if (lineIsClear(a, b, grid, info)) {
     return { len: Math.hypot(b.x - a.x, b.y - a.y), path: [{ x: a.x, y: a.y }, { x: b.x, y: b.y }], curved: false }
@@ -224,9 +186,6 @@ export function wayBetween(a, b, grid, info, opts) {
   return c ? { ...c, curved: true } : null
 }
 
-// The operator's links, resolved against the current points. Keys whose points no longer exist
-// (a deleted pin) are skipped rather than dropped, so undoing the delete brings the link back.
-// `crossesWall` is a warning only: the straight line runs through a wall or unmapped space.
 export function linksFromKeys(points, keys, grid, info) {
   const byId = new Map(points.map((p) => [p.id, p]))
   const links = []
@@ -240,29 +199,19 @@ export function linksFromKeys(points, keys, grid, info) {
       a: ida,
       b: idb,
       len: Math.hypot(b.x - a.x, b.y - a.y),
-      // One pixel of room = "never on a black or grey pixel".
       crossesWall: grid ? !lineIsClear(a, b, grid, info, info.resolution) : false,
     })
   }
   return links
 }
 
-// Room the robot's own walk to its first point may wander around walls.
 const ROBOT_LEG = { maxRatio: 3, marginM: 3 }
 
-// The way to a destination: the robot walks by itself to the point it can reach soonest (measured
-// around walls, never through them), then follows links to the destination, taking the shortest
-// total distance.
-//
-// Returns { ok: true, stops: [point, ...], lengthM, entry, robotLeg: path, legs: [path, ...] }
-// or { ok: false, reason }.
 export function planRoute({ points, links, robot, targetId, grid, info }) {
   const target = points.find((p) => p.id === targetId)
   if (!target) return { ok: false, reason: 'That point is not on this map.' }
   if (!robot) return { ok: false, reason: 'The robot is not on this map. Relocalize it here first.' }
 
-  // Straight distance is never more than the walking distance, so once a candidate's straight
-  // distance passes the best walk found, nothing further away can beat it.
   let entry = null
   let entryDist = Infinity
   let robotLeg = null
@@ -278,7 +227,6 @@ export function planRoute({ points, links, robot, targetId, grid, info }) {
     return { ok: false, reason: 'The robot cannot walk to any of the points from where it is. Add a Simple waypoint near the robot.' }
   }
 
-  // Dijkstra over the links. Point counts are small, so the simple O(n²) form is enough.
   const adj = new Map(points.map((p) => [p.id, []]))
   for (const l of links) {
     adj.get(l.a)?.push([l.b, l.len])

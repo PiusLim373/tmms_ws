@@ -1,6 +1,4 @@
 
-// 'action' is the stored type of a Point of Interest (POI1, POI2, ...). The UI calls it a Point
-// of Interest everywhere; the stored value stays 'action' so saved graphs keep loading.
 export const PIN_TYPES = ['action', 'simple', 'home']
 
 export const PIN_META = {
@@ -21,8 +19,6 @@ export const PIN_META = {
   },
 }
 
-// Not a mission pin: the relocalize marker. It lives outside the graph, is never saved, and is
-// not in PIN_TYPES, so it never shows up as something the operator can arm.
 export const POSE_TYPE = 'pose'
 export const POSE_ID = 'relocalize_pose'
 
@@ -53,7 +49,6 @@ export function makePin(type, world, existing) {
 
 export const routeOrder = (pins) => pins.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
 
-// Points copied in from mapping keep their own names, so they don't take a number from POI1, POI2...
 export const pinsOfType = (pins, type) => routeOrder(pins.filter((p) => p.type === type && p.source !== 'mapping'))
 
 export function displayNumber(pin, pins = []) {
