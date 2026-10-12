@@ -18,7 +18,8 @@ const DB_NAME = process.env.C2_DB || 'tmms_c2'
 
 // Same shapes the C2 tab generates. Anchored, so an id can never smuggle a Mongo operator.
 const GRAPH_ID_RE = /^g_[a-z0-9]{1,32}$/
-const PIN_ID_RE = /^pin_[a-z0-9_]{1,64}$/
+// pin_... for the operator's own pins, poi_<n> for a point copied in from mapping.
+const PIN_ID_RE = /^(pin_[a-z0-9_]{1,64}|poi_\d{1,9})$/
 const NAME_RE = /^[A-Za-z0-9_]{1,128}$/
 const PIN_TYPES = new Set(['action', 'simple', 'home'])
 const MAX_PINS = 2000

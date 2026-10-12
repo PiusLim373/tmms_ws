@@ -5,6 +5,7 @@ import {
   ZoomControls, ViewToggle, ScaleBar, CoordReadout,
 } from './ui/C2MapControls'
 import { C2MapCanvas } from './widgets/C2MapCanvas'
+import { C2PoiHoverCard, C2PoiViewer } from './widgets/C2PoiPhotos'
 import { C2LoadMapWidget } from './widgets/C2LoadMapWidget'
 import { C2RobotStatusWidget } from './widgets/C2RobotStatusWidget'
 import { C2PointsWidget } from './widgets/C2PointsWidget'
@@ -38,6 +39,14 @@ const PLAN_LOG_LENGTH = 20
 const LINK_HIT_PX = 7
 const NO_LINKS = []
 const isMapPoint = (id) => typeof id === 'string' && id.startsWith('poi_')
+// The graph last opened on each map, so it opens again by itself next time.
+const LAST_GRAPH_KEY = 'tmms.c2.lastGraph'
+// Map view toggles (show Pius's points, show names) are remembered per browser.
+const VIEW_PREFS_KEY = 'tmms.c2.mapView'
+function loadViewPrefs() {
+  try { return { mapPoints: true, names: true, ...JSON.parse(localStorage.getItem(VIEW_PREFS_KEY) ?? '{}') } }
+  catch { return { mapPoints: true, names: true } }
+}
 // Every point can be linked: Points of Interest, Simple waypoints and Home.
 const canLink = (p) => Boolean(p)
 // How close the robot must come to a stop for it to count as reached. Matches nav2's
@@ -140,6 +149,8 @@ export function C2Page() {
 
   const { graphs, updateGraphs, status: storeStatus } = useC2GraphStore()
   const [graph, setGraph] = useState(null)
+  // The map a graph was last opened for by itself (see "open the last graph on start").
+  const autoOpenedFor = useRef(null)
   const [editing, setEditing] = useState(false)
   const [graphPanel, setGraphPanel] = useState(null)
 
@@ -259,6 +270,7 @@ export function C2Page() {
   }, [])
 
   const selectMap = useCallback((name) => {
+    autoOpenedFor.current = null
     setMapName(name)
     setMapError(null)
     closeGraph()
@@ -302,6 +314,28 @@ export function C2Page() {
     setEditing(false)
     setGraphPanel(null)
   }, [graphs, resetHistory])
+
+  // -- open the last graph on start ---------------------------------------------
+  // When a map is shown with no graph open, a graph opens by itself (view only): the one last
+  // opened on that map in this browser, else the one on that map changed most recently. Picking
+  // a map does it again; closing a graph with ✕ doesn't reopen it.
+  useEffect(() => {
+    if (!graph || !mapName) return
+    try {
+      const last = JSON.parse(localStorage.getItem(LAST_GRAPH_KEY) ?? '{}')
+      localStorage.setItem(LAST_GRAPH_KEY, JSON.stringify({ ...last, [mapName]: graph.id }))
+    } catch { /* not remembered */ }
+  }, [graph, mapName])
+  useEffect(() => {
+    if (!mapName || graph || storeStatus === 'loading' || storeStatus === 'offline' || autoOpenedFor.current === mapName) return
+    autoOpenedFor.current = mapName
+    const onMap = graphs.filter((g) => g.map === mapName)
+    let lastId = null
+    try { lastId = JSON.parse(localStorage.getItem(LAST_GRAPH_KEY) ?? '{}')[mapName] ?? null } catch { /* none */ }
+    const newest = onMap.reduce((a, g) => (!a || (g.updatedAt ?? '') > (a.updatedAt ?? '') ? g : a), null)
+    const pick = onMap.find((g) => g.id === lastId) ?? newest
+    if (pick) loadGraph(pick.id)
+  }, [mapName, graph, graphs, storeStatus, loadGraph])
 
   const addPin = useCallback((type, world) => {
     let placedId = null
@@ -416,9 +450,11 @@ export function C2Page() {
 
   // -- points that came with the map -----------------------------------------
   // Pius's points of interest, captured while mapping and copied into the 2D map's yaml.
-  // /api/maps2d returns them as `pois`, yaw in DEGREES in the map frame. They belong to the map,
-  // so C2 shows them on every graph of that map and never moves, renames or deletes them.
-  const mapPoints = useMemo(() => (selectedMap?.pois ?? [])
+  // /api/maps2d returns them as `pois`, yaw in DEGREES in the map frame. Mapping only ever adds
+  // points, it never edits them, so C2 copies each one into the open graph the first time it sees
+  // it (saved to the database with the graph's pins). From then on the graph's copy is the one
+  // used: it can be moved and turned in C2, but not renamed or deleted.
+  const fileMapPoints = useMemo(() => (selectedMap?.pois ?? [])
     .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
     .map((p) => ({
       id: `poi_${p.id}`,
@@ -432,10 +468,35 @@ export function C2Page() {
       poi: { description: p.description ?? '', snapshots: p.snapshots ?? [], timestamp: p.timestamp ?? '' },
     })), [selectedMap])
 
-  const allPoints = useMemo(() => [...mapPoints, ...pins], [mapPoints, pins])
+  // Copies in the map's points this graph doesn't have yet. Undo/redo states get them too, so
+  // undoing never takes them back out.
+  useEffect(() => {
+    if (!graph || fileMapPoints.length === 0) return
+    const withMapPoints = (list) => {
+      const have = new Set(list.map((p) => p.id))
+      const missing = fileMapPoints.filter((p) => !have.has(p.id))
+      return missing.length ? [...missing, ...list] : list
+    }
+    const next = withMapPoints(pinsRef.current)
+    if (next === pinsRef.current) return
+    const h = historyRef.current
+    h.past = h.past.map(withMapPoints)
+    h.future = h.future.map(withMapPoints)
+    applyPins(next)
+  }, [graph, fileMapPoints, applyPins])
+
+  const mapPoints = useMemo(
+    () => (graph ? pins.filter((p) => p.source === 'mapping') : fileMapPoints), [graph, pins, fileMapPoints])
+  const ownPins = useMemo(() => pins.filter((p) => p.source !== 'mapping'), [pins])
+  const allPoints = useMemo(() => [...mapPoints, ...ownPins], [mapPoints, ownPins])
 
   // -- canvas: every point plus the relocalize marker --------------------------
-  const canvasPins = useMemo(() => (posePin ? [...allPoints, posePin] : allPoints), [allPoints, posePin])
+  const [viewPrefs, setViewPrefs] = useState(loadViewPrefs)
+  const toggleViewPref = useCallback((key) => setViewPrefs((prev) => {
+    const next = { ...prev, [key]: !prev[key] }
+    try { localStorage.setItem(VIEW_PREFS_KEY, JSON.stringify(next)) } catch { /* not remembered */ }
+    return next
+  }), [])
 
   // -- the point network -------------------------------------------------------
   // Built from the map picture once per map; every "is this line clear?" after that is a lookup.
@@ -453,9 +514,16 @@ export function C2Page() {
   // Clicking a point: normally selects it. With the Link tool on, the first click picks the start
   // and each next click links it to the previous one, so A, B, C links A-B and B-C. Clicking a
   // pair that is already linked removes that link.
+  // Clicking one of Pius's points opens its photos. Only when not editing: while editing, a click
+  // is for moving and linking. It stays selected after the viewer closes, ready for Go.
+  const [viewerId, setViewerId] = useState(null)
   const selectPoint = useCallback((id) => {
     setSelectedLink(null)
-    if (!linkMode) { setSelectedId(id); return }
+    if (!linkMode) {
+      setSelectedId(id)
+      if (!canEdit && isMapPoint(id)) setViewerId(id)
+      return
+    }
     if (!id) { setLinkStart(null); return }
     const point = graphPoints.find((p) => p.id === id)
     if (!canLink(point)) return
@@ -464,7 +532,7 @@ export function C2Page() {
     setLinkKeys((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
     setLinkStart(id)
     setSelectedId(id)
-  }, [linkMode, linkStart, graphPoints])
+  }, [linkMode, linkStart, graphPoints, canEdit])
 
   const toggleLinkMode = useCallback(() => {
     setLinkMode((on) => !on)
@@ -525,13 +593,11 @@ export function C2Page() {
 
   // The marker stays movable while the graph is locked; graph pins only move while editing.
   const handleMovePin = useCallback((id, world) => {
-    if (isMapPoint(id)) return
     if (id === POSE_ID) setPosePin((p) => (p ? { ...p, x: world.x, y: world.y } : p))
     else if (canEdit) movePin(id, world)
   }, [canEdit, movePin])
 
   const handleSetYaw = useCallback((id, yaw) => {
-    if (isMapPoint(id)) return
     if (id === POSE_ID) setPosePin((p) => (p ? { ...p, yaw: yaw ?? 0, headingSet: yaw != null } : p))
     else if (canEdit) setYaw(id, yaw)
   }, [canEdit, setYaw])
@@ -660,12 +726,33 @@ export function C2Page() {
   }, [robot?.position?.x, robot?.position?.y, walking]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (placingType || reloc !== 'idle') setRouteMode(null) }, [placingType, reloc])
 
+  // "Hide Pius's points" only hides them from the map: they still count for routes. A hidden
+  // point still shows while it is selected or a stop on the route being previewed or walked.
+  const hiddenIds = useMemo(() => {
+    if (viewPrefs.mapPoints) return null
+    const keep = new Set([selectedId, ...(activePlan?.stops ?? []).map((p) => p.id),
+      ...(walking?.stops ?? []).map((p) => p.id)])
+    return new Set(mapPoints.filter((p) => !keep.has(p.id)).map((p) => p.id))
+  }, [viewPrefs.mapPoints, selectedId, activePlan, walking, mapPoints])
+  const shownPoints = useMemo(
+    () => (hiddenIds ? allPoints.filter((p) => !hiddenIds.has(p.id)) : allPoints), [allPoints, hiddenIds])
+  const shownLinks = useMemo(
+    () => (hiddenIds ? links.filter((l) => !hiddenIds.has(l.a) && !hiddenIds.has(l.b)) : links), [links, hiddenIds])
+  const canvasPins = useMemo(() => (posePin ? [...shownPoints, posePin] : shownPoints), [shownPoints, posePin])
+  const viewerPoint = mapPoints.find((p) => p.id === viewerId) ?? null
+  // The map point under the pointer, for its hover card. Same reach as clicking it.
+  const hoveredMapPoint = useMemo(() => {
+    if (!hover || !info || viewerId) return null
+    const h = toScreenPt(hover)
+    return shownPoints.find((p) => p.source === 'mapping' && Math.hypot(toScreenPt(p).x - h.x, toScreenPt(p).y - h.y) <= 16) ?? null
+  }, [hover, info, viewerId, shownPoints, toScreenPt])
+
   const drawUnder = useCallback((ctx, toScreen) => {
     const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent-bright').trim() || '#7C3AED'
     const from = linkMode && linkStart ? graphPoints.find((p) => p.id === linkStart) : null
     drawGraphLayer(ctx, toScreen, {
       points: graphPoints,
-      links,
+      links: shownLinks,
       selectedKey: selectedLink,
       pending: from && hover ? { from, to: hover } : null,
       plan: activePlan ?? (walking
@@ -679,7 +766,7 @@ export function C2Page() {
         : null),
       accent,
     })
-  }, [graphPoints, links, selectedLink, linkMode, linkStart, hover, activePlan, walking, navPath])
+  }, [graphPoints, shownLinks, selectedLink, linkMode, linkStart, hover, activePlan, walking, navPath])
 
   // Linking only makes sense while the graph is being edited.
   useEffect(() => { if (!canEdit) { setLinkMode(false); setLinkStart(null) } }, [canEdit])
@@ -857,6 +944,8 @@ export function C2Page() {
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
+      <C2PoiViewer point={viewerPoint} mapName={mapName} onClose={() => setViewerId(null)} />
+
       <input
         ref={fileRef}
         type="file"
@@ -901,6 +990,7 @@ export function C2Page() {
             onSizeChange={onSizeChange}
             drawUnder={drawUnder}
             onEmptyClick={handleEmptyClick}
+            showNames={viewPrefs.names}
           />
 
           <MapOverlay
@@ -914,6 +1004,39 @@ export function C2Page() {
             scan={scanLive ? scan : null}
             ghost={null}
           />
+
+          <div style={{ position: 'absolute', top: 10, left: 10, zIndex: 6, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 'calc(100% - 20px)' }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button
+                className="btn-icon"
+                style={{ fontSize: 11, padding: '4px 8px', background: 'var(--panel-bg)' }}
+                onClick={() => toggleViewPref('mapPoints')}
+                aria-pressed={!viewPrefs.mapPoints}
+                title="Pius's points from mapping. Hidden ones still count for routes."
+              >
+                {viewPrefs.mapPoints ? '◉ Hide mapping points' : '○ Show mapping points'}
+              </button>
+              <button
+                className="btn-icon"
+                style={{ fontSize: 11, padding: '4px 8px', background: 'var(--panel-bg)' }}
+                onClick={() => toggleViewPref('names')}
+                aria-pressed={!viewPrefs.names}
+                title="Name labels over the points. The selected point always shows its name."
+              >
+                {viewPrefs.names ? '◉ Hide names' : '○ Show names'}
+              </button>
+            </div>
+
+          </div>
+
+          {hoveredMapPoint && (
+            <C2PoiHoverCard
+              point={hoveredMapPoint}
+              at={toScreenPt(hoveredMapPoint)}
+              mapName={mapName}
+              bounds={canvasSize}
+            />
+          )}
 
           {selectedLinkInfo && info && (() => {
             const byId = new Map(graphPoints.map((p) => [p.id, p]))
@@ -1084,7 +1207,7 @@ export function C2Page() {
         />
         <div style={{ height: `${(pointsEnd - mapEnd) * 100}%`, flexShrink: 0, overflow: 'hidden' }}>
           <C2PointsWidget
-            pins={pins}
+            pins={ownPins}
             selectedId={selectedId}
             placingType={placingType}
             editable={editing}

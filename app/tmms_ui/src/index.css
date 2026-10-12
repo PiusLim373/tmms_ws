@@ -24,6 +24,8 @@
   --map-wall:      #1A1024;
   --map-unknown:   #0D0812;
   --pin-action:    #DC2626;
+  /* C2 Points of Interest. */
+  --pin-poi:       #DC2626;
   --pin-simple:    #1D4ED8;
   --pin-home:      #34D399;
   --robot-marker:  #22D3EE;
@@ -52,6 +54,7 @@
   --map-wall:      #2A1F3D;
   --map-unknown:   #DDD4EC;
   --pin-action:    #DC2626;
+  --pin-poi:       #DC2626;
   --pin-simple:    #1D4ED8;
   --pin-home:      #047857;
   --robot-marker:  #0891B2;

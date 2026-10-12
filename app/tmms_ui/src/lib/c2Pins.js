@@ -7,7 +7,7 @@ export const PIN_META = {
   action: {
     label: 'Point of Interest',
     hint: 'Somewhere to investigate. The robot can be sent here, and can also pass through it.',
-    colorVar: '--pin-action',
+    colorVar: '--pin-poi',
   },
   simple: {
     label: 'Simple Waypoint',
@@ -53,7 +53,8 @@ export function makePin(type, world, existing) {
 
 export const routeOrder = (pins) => pins.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
 
-export const pinsOfType = (pins, type) => routeOrder(pins.filter((p) => p.type === type))
+// Points copied in from mapping keep their own names, so they don't take a number from POI1, POI2...
+export const pinsOfType = (pins, type) => routeOrder(pins.filter((p) => p.type === type && p.source !== 'mapping'))
 
 export function displayNumber(pin, pins = []) {
   const i = pinsOfType(pins, pin.type).findIndex((p) => p.id === pin.id)

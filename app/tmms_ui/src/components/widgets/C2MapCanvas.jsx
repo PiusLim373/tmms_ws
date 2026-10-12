@@ -33,7 +33,7 @@ function readColors() {
     border: v('--border', '#2D1F42'),
     accent: v('--accent-bright', '#7C3AED'),
     robot: v('--robot-marker', '#22D3EE'),
-    action: v('--pin-action', '#DC2626'),
+    action: v('--pin-poi', '#DC2626'),
     simple: v('--pin-simple', '#1D4ED8'),
     home: v('--pin-home', '#34D399'),
     pose: v('--robot-marker', '#22D3EE'),
@@ -43,7 +43,7 @@ function readColors() {
 export function C2MapCanvas({
   info, image, pins, selectedId, placingType, editable = true, view, robot,
   onViewChange, onPlace, onSelect, onMovePin, onSetYaw, onRename, onHover, onSizeChange,
-  drawUnder, onEmptyClick,
+  drawUnder, onEmptyClick, showNames = true,
 }) {
   const wrapRef = useRef(null)
   const canvasRef = useRef(null)
@@ -129,7 +129,7 @@ export function C2MapCanvas({
     if (!info) return null
 
     const selected = pins.find((p) => p.id === selectedId)
-    if (editable && selected && HEADING_TYPES.has(selected.type) && selected.source !== 'mapping') {
+    if (editable && selected && HEADING_TYPES.has(selected.type)) {
       const c = toScreen(selected.x, selected.y)
       const yaw = effectiveYaw(selected) ?? 0
       const hx = c.x + Math.cos(-yaw) * HANDLE_ORBIT_PX
@@ -295,8 +295,9 @@ export function C2MapCanvas({
       const yaw = effectiveYaw(pin)
       if (yaw != null) drawHeadingArrow(ctx, s, yaw, color)
       const fromMap = pin.source === 'mapping'
+      // With names hidden, only the selected point keeps its name.
       const chip = drawPin(ctx, s, pin, color, selected,
-        fromMap ? 'P' : displayNumber(pin, ownPins), displayName(pin, ownPins))
+        fromMap ? 'P' : displayNumber(pin, ownPins), showNames || selected ? displayName(pin, ownPins) : null)
       if (fromMap) drawMappingRing(ctx, s)
       if (chip) chipRects.set(pin.id, chip)
     }
@@ -309,10 +310,10 @@ export function C2MapCanvas({
     }
 
     const selected = pins.find((p) => p.id === selectedId)
-    if (editable && selected && HEADING_TYPES.has(selected.type) && selected.source !== 'mapping') {
+    if (editable && selected && HEADING_TYPES.has(selected.type)) {
       drawRotateHandle(ctx, toScreen(selected.x, selected.y), effectiveYaw(selected) ?? 0, c.accent)
     }
-  }, [size, info, image, view, pins, selectedId, shownRobot, robotImg, editable, toScreen, themeTick, drawUnder])
+  }, [size, info, image, view, pins, selectedId, shownRobot, robotImg, editable, toScreen, themeTick, drawUnder, showNames])
 
   return (
     <div ref={wrapRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
@@ -341,7 +342,22 @@ function drawPin(ctx, s, pin, color, selected, number, name) {
   return drawAction(ctx, s, color, selected, number, name)
 }
 
+// Frosts what is already drawn under a circle: the map shows through the point, blurred.
+// Works in device pixels, so it is right whatever scale the canvas is drawn at.
+function frostCircle(ctx, s, r) {
+  const m = ctx.getTransform()
+  ctx.save()
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.beginPath()
+  ctx.arc(m.a * s.x + m.e, m.d * s.y + m.f, r * m.a, 0, Math.PI * 2)
+  ctx.clip()
+  ctx.filter = `blur(${3 * m.a}px)`
+  ctx.drawImage(ctx.canvas, 0, 0)
+  ctx.restore()
+}
+
 function drawAction(ctx, s, color, selected, number, name) {
+  frostCircle(ctx, s, ACTION_RADIUS)
   ctx.save()
   ctx.translate(s.x, s.y)
 
@@ -353,22 +369,34 @@ function drawAction(ctx, s, color, selected, number, name) {
     ctx.fill()
     ctx.globalAlpha = 1
   }
+  // Glass: see-through yellow, a soft shine at the top-left, a thin bright rim.
   ctx.beginPath()
   ctx.arc(0, 0, ACTION_RADIUS, 0, Math.PI * 2)
   ctx.fillStyle = color
-  ctx.shadowColor = 'rgba(0,0,0,0.45)'
-  ctx.shadowBlur = 4
-  ctx.shadowOffsetY = 1.5
+  ctx.globalAlpha = selected ? 0.8 : 0.55
   ctx.fill()
-  ctx.shadowColor = 'transparent'
-  ctx.shadowOffsetY = 0
-  ctx.strokeStyle = '#FFFFFF'
-  ctx.lineWidth = selected ? 3 : 2.2
+  ctx.globalAlpha = 1
+  const shine = ctx.createRadialGradient(-ACTION_RADIUS * 0.4, -ACTION_RADIUS * 0.5, 0, 0, 0, ACTION_RADIUS)
+  shine.addColorStop(0, 'rgba(255,255,255,0.65)')
+  shine.addColorStop(0.45, 'rgba(255,255,255,0.12)')
+  shine.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = shine
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+  ctx.lineWidth = selected ? 3 : 1.6
+  ctx.stroke()
+  ctx.beginPath()
+  ctx.arc(0, 0, ACTION_RADIUS + 1, 0, Math.PI * 2)
+  ctx.strokeStyle = color
+  ctx.lineWidth = 1
   ctx.stroke()
   ctx.fillStyle = '#FFFFFF'
   ctx.font = '700 14px Inter, system-ui, sans-serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
+  // A soft shadow keeps the white number readable through the see-through red.
+  ctx.shadowColor = 'rgba(0,0,0,0.6)'
+  ctx.shadowBlur = 3
   ctx.fillText(String(number), 0, 0.5)
   ctx.restore()
   return drawNameChip(ctx, s.x, s.y - ACTION_RADIUS - 6, name, selected, color)

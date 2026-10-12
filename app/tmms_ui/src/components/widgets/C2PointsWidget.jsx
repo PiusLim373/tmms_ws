@@ -434,7 +434,7 @@ export function C2PointsWidget({
               </button>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.5 }}>
-              Marked while mapping. It belongs to the map, so it can't be moved or deleted here.
+              Marked while mapping. While editing you can drag it to move it and turn it; it can't be renamed or deleted.
             </div>
             <Field label="Position (map frame)">
               <span className="val-mono" style={{ fontSize: 11 }}>
