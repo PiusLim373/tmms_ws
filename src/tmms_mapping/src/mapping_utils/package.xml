@@ -11,11 +11,9 @@
     scan-END convention to the scan-START convention both mappers assume.
     Derived from the ROS 2 port of HViktorTsoi/rs_to_velodyne.
 
-    Also carries map_downsampler_node, which voxel-downsamples FAST-LIO's accumulated
-    /Laser_map (pcl::PointXYZINormal, 48 B/pt) onto /downsampled_fastlio_map
-    (pcl::PointXYZI, 32 B/pt) so a live coverage view can be streamed to Lichtblick over
-    rosbridge, which the raw topic is far too large for. Its ~/load_pcd service does the same
-    to a saved .pcd, onto /downsampled_pcd_map, giving 3D context during navigation.
+    Also carries map_downsampler_node, whose ~/load_pcd service voxel-downsamples a saved
+    .pcd onto /downsampled_pcd_map (pcl::PointXYZI, 32 B/pt) so it can be streamed to
+    Lichtblick over rosbridge, giving 3D context during navigation.
 
     And map_flattener_node, which turns one of those saved .pcd files into the 2D
     nav_msgs/OccupancyGrid nav2 needs: a z-band pass-through plus radius outlier removal,

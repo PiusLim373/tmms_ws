@@ -9,6 +9,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(rosgraph_msgs REQUIRED)
 find_package(unitree_api REQUIRED)
 find_package(unitree_go REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -32,7 +33,7 @@ target_include_directories(quadruped_controller_node PUBLIC
 target_compile_features(quadruped_controller_node PUBLIC c_std_99 cxx_std_17)
 
 ament_target_dependencies(quadruped_controller_node
-  rclcpp geometry_msgs sensor_msgs nav_msgs unitree_api unitree_go std_msgs std_srvs
+  rclcpp geometry_msgs sensor_msgs nav_msgs rosgraph_msgs unitree_api unitree_go std_msgs std_srvs
   tmms_msgs tf2 tf2_ros)
 
 install(TARGETS quadruped_controller_node

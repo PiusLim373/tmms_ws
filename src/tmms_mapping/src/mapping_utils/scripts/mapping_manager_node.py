@@ -52,9 +52,18 @@ session start is the pose of camera_init, and the resulting tree is:
     odom -(quadruped_controller)-> base_footprint -> base_link -> rslidar, dog_imu_link, ...
       +--(this node, static)-----> camera_init -(FAST-LIO)-> body
 
+The mapping view draws the robot on body, not on leg odometry, which drifts off the map:
+fast_lio.launch.py publishes the display model under the mapping/ prefix, and the same latched
+message carries body -> mapping/base_link, i.e. dog_imu_link -> base_link.
+
 This replaces the identity map->camera_init / map->odom statics fast_lio.launch.py used to
 publish, which were only ever correct when odom happened to be zero; at any other odom pose
 the map and the robot model were displaced by exactly that pose.
+
+AMCL's map -> odom broadcast (its tf_broadcast parameter) is switched off before the anchor is
+placed and back on when the session ends. AMCL keeps matching scans against the previously
+loaded 2D map, so during mapping its corrections are wrong, and each one moves odom -- and the
+anchored camera_init with it -- in the map frame.
 
 POINTS OF INTEREST
 ------------------
@@ -79,13 +88,15 @@ import threading
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.duration import Duration
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from rclpy.time import Time
 
 from geometry_msgs.msg import Pose, TransformStamped
 from nav_msgs.msg import Odometry
+from rcl_interfaces.srv import SetParameters
 from std_srvs.srv import Trigger
 from tf2_msgs.msg import TFMessage
 from tmms_msgs.srv import POIPoseTrigger, StringTrigger
@@ -113,9 +124,15 @@ class MappingManagerNode(Node):
         self.declare_parameter('imu_frame', 'dog_imu_link')
         self.declare_parameter('child_frame', 'camera_init')
         self.declare_parameter('base_frame', 'base_footprint')
+        # Display model hung off body; the prefix must match fast_lio.launch.py's. '' = off.
+        self.declare_parameter('body_frame', 'body')
+        self.declare_parameter('model_root_frame', 'base_link')
+        self.declare_parameter('model_frame_prefix', 'mapping/')
         self.declare_parameter('odom_topic', '/Odometry')
         self.declare_parameter('poi_pose_max_age_sec', 1.0)
         self.declare_parameter('tf_lookup_timeout_sec', 5.0)
+        # AMCL whose map -> odom broadcast is paused during a session; '' leaves AMCL alone.
+        self.declare_parameter('amcl_node', '/amcl')
         # Widened for large maps -- too short a timeout here made the map look lost when it was
         # really still writing (see stopMapping's matching timeout in rosbridge.js).
         self.declare_parameter('map_save_timeout_sec', 600.0)
@@ -160,6 +177,10 @@ class MappingManagerNode(Node):
 
         self._map_save_cli = self.create_client(
             Trigger, '/map_save', callback_group=self._aux_group)
+        amcl = self._param('amcl_node')
+        self._amcl_cli = self.create_client(
+            SetParameters, f'{amcl}/set_parameters',
+            callback_group=self._aux_group) if amcl else None
 
         self.create_service(
             StringTrigger, '~/start_mapping', self._start_cb, callback_group=self._srv_group)
@@ -198,6 +219,7 @@ class MappingManagerNode(Node):
         # Never block the timer behind a long stop_mapping.
         if not self._lock.acquire(blocking=False):
             return
+        died = False
         try:
             if self._proc is not None and self._proc.poll() is not None:
                 self.get_logger().warning(
@@ -207,11 +229,18 @@ class MappingManagerNode(Node):
                 self._proc = None
                 self._map_name = None
                 self._pcd_path = None
+                died = True
         finally:
             self._lock.release()
+        if died:
+            self._set_amcl_tf_broadcast(True)
 
-    def _publish_anchor(self, looked_up):
-        """Latch odom -> camera_init at the value just read for odom -> dog_imu_link.
+    def _publish_anchor(self, looked_up, model=None):
+        """Latch odom -> camera_init at the value just read for odom -> dog_imu_link, and
+        body -> <prefix>base_link at dog_imu_link -> base_link (`model`) if given.
+
+        Both go in one message: this publisher latches only its last one, so a second
+        publish would take the anchor away from late subscribers.
 
         Re-sent fresh on every start_mapping. tf2 keys its static cache by child frame and
         overwrites, so session N's anchor replaces session N-1's rather than stacking up.
@@ -223,12 +252,23 @@ class MappingManagerNode(Node):
         anchor.header.frame_id = self._param('parent_frame')
         anchor.child_frame_id = self._param('child_frame')
         anchor.transform = looked_up.transform
-        self._tf_static_pub.publish(TFMessage(transforms=[anchor]))
+        transforms = [anchor]
 
-        t = anchor.transform.translation
-        self.get_logger().info(
-            f'anchored {anchor.header.frame_id} -> {anchor.child_frame_id} at '
-            f'xyz=[{t.x:.3f}, {t.y:.3f}, {t.z:.3f}]')
+        if model is not None:
+            body = TransformStamped()
+            body.header.stamp = anchor.header.stamp
+            body.header.frame_id = self._param('body_frame')
+            body.child_frame_id = self._param('model_frame_prefix') + self._param('model_root_frame')
+            body.transform = model.transform
+            transforms.append(body)
+
+        self._tf_static_pub.publish(TFMessage(transforms=transforms))
+
+        for tf in transforms:
+            t = tf.transform.translation
+            self.get_logger().info(
+                f'anchored {tf.header.frame_id} -> {tf.child_frame_id} at '
+                f'xyz=[{t.x:.3f}, {t.y:.3f}, {t.z:.3f}]')
 
     def _odom_cb(self, msg):
         self._odom = (msg, time.monotonic())
@@ -277,6 +317,35 @@ class MappingManagerNode(Node):
             return False, f'/map_save reported failure: {result.message}'
         return True, result.message
 
+    def _amcl_request(self, enabled):
+        return SetParameters.Request(parameters=[
+            Parameter('tf_broadcast', Parameter.Type.BOOL, enabled).to_parameter_msg()])
+
+    def _set_amcl_tf_broadcast(self, enabled):
+        """Switch AMCL's map -> odom broadcast. Best effort: no AMCL running is not an error."""
+        if self._amcl_cli is None:
+            return
+        state = 'on' if enabled else 'off'
+        if not self._amcl_cli.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warning(
+                f'{self._amcl_cli.srv_name} unavailable; AMCL tf_broadcast left as is')
+            return
+
+        future = self._amcl_cli.call_async(self._amcl_request(enabled))
+        done = threading.Event()
+        future.add_done_callback(lambda _f: done.set())
+        if not done.wait(5.0):
+            future.cancel()
+            self.get_logger().warning(f'AMCL did not answer; tf_broadcast not switched {state}')
+            return
+
+        result = future.result()
+        if result is None or not result.results or not result.results[0].successful:
+            reason = result.results[0].reason if result and result.results else 'no response'
+            self.get_logger().warning(f'AMCL refused tf_broadcast {state}: {reason}')
+            return
+        self.get_logger().info(f'AMCL map -> odom broadcast {state}')
+
     def _terminate_child(self):
         """SIGINT the whole launch process group, escalating if it will not go."""
         proc = self._proc
@@ -314,6 +383,31 @@ class MappingManagerNode(Node):
                 self.get_logger().warning(
                     'shutting down with a mapping session active -- the map was NOT saved.')
                 self._terminate_child()
+                self._restore_amcl_at_exit()
+
+    def _restore_amcl_at_exit(self):
+        """Switch AMCL's broadcast back on from a fresh context: by now rclpy's signal handler
+        has usually shut this node's own context down."""
+        amcl = self._param('amcl_node')
+        if not amcl:
+            return
+        ctx = rclpy.Context()
+        rclpy.init(context=ctx)
+        try:
+            node = rclpy.create_node('mapping_manager_exit', context=ctx)
+            cli = node.create_client(SetParameters, f'{amcl}/set_parameters')
+            future = None
+            if cli.wait_for_service(timeout_sec=2.0):
+                future = cli.call_async(self._amcl_request(True))
+                rclpy.spin_until_future_complete(
+                    node, future, executor=SingleThreadedExecutor(context=ctx), timeout_sec=3.0)
+            result = future.result() if future is not None and future.done() else None
+            if result is not None and result.results and result.results[0].successful:
+                self.get_logger().info('AMCL map -> odom broadcast on')
+            else:
+                self.get_logger().warning('could not switch AMCL tf_broadcast back on at exit')
+        finally:
+            rclpy.shutdown(context=ctx)
 
     # -- services --------------------------------------------------------------
 
@@ -379,6 +473,8 @@ class MappingManagerNode(Node):
                 response.message = f'could not create {pcd_dir}: {exc}'
                 return response
 
+            self._set_amcl_tf_broadcast(False)
+
             parent = self._param('parent_frame')
             imu = self._param('imu_frame')
             try:
@@ -386,14 +482,29 @@ class MappingManagerNode(Node):
                     parent, imu, Time(),
                     Duration(seconds=float(self._param('tf_lookup_timeout_sec'))))
             except TransformException as exc:
+                self._set_amcl_tf_broadcast(True)
                 response.success = False
                 response.message = (
                     f'could not look up {parent} -> {imu}: {exc}.')
                 return response
 
+            # body is dog_imu_link, so the display model's root sits at dog_imu_link ->
+            # base_link from it. Mapping does not need it, so a failure only warns.
+            model = None
+            if self._param('model_frame_prefix'):
+                root = self._param('model_root_frame')
+                try:
+                    model = self._buffer.lookup_transform(
+                        imu, root, Time(),
+                        Duration(seconds=float(self._param('tf_lookup_timeout_sec'))))
+                except TransformException as exc:
+                    self.get_logger().warning(
+                        f'could not look up {imu} -> {root}: {exc}; the mapping view will '
+                        'not draw the robot.')
+
             # Anchor before spawning, so camera_init is already placed by the time FAST-LIO
             # emits its first camera_init -> body.
-            self._publish_anchor(looked_up)
+            self._publish_anchor(looked_up, model)
 
             cmd = ['ros2', 'launch', self._param('launch_package'), self._param('launch_file'),
                    f'map_file_path:={pcd_path}']
@@ -404,6 +515,7 @@ class MappingManagerNode(Node):
                 # makes the group-kill in stop_mapping reach every node it spawned.
                 self._proc = subprocess.Popen(cmd, start_new_session=True, env=os.environ.copy())
             except OSError as exc:
+                self._set_amcl_tf_broadcast(True)
                 response.success = False
                 response.message = f'could not spawn {" ".join(cmd)}: {exc}'
                 return response
@@ -434,6 +546,7 @@ class MappingManagerNode(Node):
             self._map_name = None
             self._pcd_path = None
 
+        self._set_amcl_tf_broadcast(True)
         self.get_logger().info(f'mapping session "{name}" ended; {kill_msg}')
         response.success = save_ok
         response.message = (

@@ -167,12 +167,8 @@ def generate_launch_description():
                     output='screen',
                     parameters=[{'maps_dir': maps_dir}]),
 
-                # Voxelises point clouds for the bridge, in both directions of the workflow:
-                # /Laser_map -> /downsampled_fastlio_map live during a mapping session, and
-                # ~/load_pcd -> /downsampled_pcd_map for 3D context during navigation. It
-                # used to live in fast_lio.launch.py, but a pure subscriber costs nothing
-                # while its input topic does not exist, and the load service has to be
-                # reachable when FAST-LIO is NOT running.
+                # Voxelises a saved .pcd for the bridge: ~/load_pcd -> /downsampled_pcd_map,
+                # for 3D context during navigation. Idle until a map is loaded.
                 Node(
                     package='mapping_utils',
                     executable='map_downsampler_node',

@@ -13,28 +13,22 @@ CPU to burn.
 Headless by design -- no RViz. Monitor the run in Lichtblick on /converted_rslidar_points,
 /Odometry, /path and /cloud_registered.
 
-For the accumulated map, subscribe to /downsampled_fastlio_map, NOT /Laser_map. /Laser_map is
-the whole map re-serialised every second with no deduplication at 48 B/pt -- 41 MB per message
-at 855k points and still growing, which rosbridge cannot sustain (the view freezes a minute or
-two in). map_downsampler voxelises it to /downsampled_fastlio_map, whose point count saturates
-once an area has been covered. Leaving /Laser_map subscribed in Lichtblick defeats this
-entirely, so remove it from the panel.
-
-map_downsampler_node itself runs from operation.launch.py, not from here -- its ~/load_pcd
-service also serves saved .pcd files during navigation, when this launch is not running. So
-/downsampled_fastlio_map appears as soon as this launch starts producing /Laser_map, with no
-argument to enable it.
+For the accumulated map, subscribe to /downsampled_fastlio_map. FAST-LIO publishes it itself:
+voxelised, held to a point budget, and resent only as the map grows. Its knobs are the
+publish.map_* parameters in fast_lio_converted_rslidar.yaml.
 
 Standalone, if you do need it (defaults are correct for the live system):
 
     ros2 launch tmms_master fast_lio.launch.py \\
         map_file_path:=/home/htxgrrt/.htxgrrt/maps/pcd/foo.pcd
 
-TF: this launch publishes NOTHING but FAST-LIO's own dynamic camera_init -> body. The tree is
-rooted at odom and looks like this:
+TF: this launch publishes FAST-LIO's own dynamic camera_init -> body, and the display model
+(tmms_description's b2_visual.urdf) again under the mapping/ prefix, so the mapping view can
+draw the robot on SLAM's pose instead of leg odometry's. The tree is rooted at odom:
 
     odom -(quadruped_controller)-> base_footprint -> base_link -> rslidar, dog_imu_link, ...
       +--(mapping_manager, static)-> camera_init -(FAST-LIO)-> body
+                                       -(mapping_manager, static)-> mapping/base_link -> ...
 
 quadruped_controller's TF must therefore be RUNNING, not stood down -- mapping_manager reads
 odom -> dog_imu_link at session start and latches exactly that as odom -> camera_init.
@@ -172,12 +166,28 @@ def generate_launch_description():
         ],
     )
 
-    # No static transforms here by design -- mapping_manager_node latches the one that
-    # matters (odom -> camera_init) from a live odom -> dog_imu_link lookup at session start.
-    # See the TF section of the docstring above.
-    #
-    # map_downsampler_node is NOT here either: it moved to operation.launch.py, because its
-    # ~/load_pcd service has to be reachable during navigation, when this launch is not
-    # running. It is a pure subscriber, so it costs nothing while /Laser_map does not exist.
+    # The display model on mapping/ frames, hung off body by mapping_manager. Namespaced so it
+    # does not publish a second /robot_description; the joints still come from /joint_states.
+    visual_urdf = os.path.join(
+        get_package_share_directory('tmms_description'), 'urdf', 'b2_visual.urdf')
+    with open(visual_urdf) as f:
+        visual_description = f.read()
+    body_model = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='robot_state_publisher',
+        namespace='mapping',
+        output='screen',
+        parameters=[{
+            'robot_description': visual_description,
+            'frame_prefix': 'mapping/',
+            'use_sim_time': use_sim_time,
+        }],
+        remappings=[('joint_states', '/joint_states')],
+    )
 
-    return LaunchDescription(args + [converter, fast_lio])
+    # No static transforms here by design -- mapping_manager_node latches the ones that
+    # matter (odom -> camera_init, body -> mapping/base_link) from live lookups at session
+    # start. See the TF section of the docstring above.
+
+    return LaunchDescription(args + [converter, fast_lio, body_model])

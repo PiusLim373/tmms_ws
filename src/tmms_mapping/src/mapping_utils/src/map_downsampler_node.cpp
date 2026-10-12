@@ -1,38 +1,15 @@
-// Voxel-downsamples FAST-LIO's accumulated map so it can be streamed to Lichtblick over
-// rosbridge, giving the operator a live view of which areas have already been covered.
-//
-// Input   /Laser_map                (pcl::PointXYZINormal, point_step 48)
-// Output  /downsampled_fastlio_map  (pcl::PointXYZI,       point_step 32)
+// Voxel-downsamples a saved .pcd so it can be streamed to Lichtblick over rosbridge, giving
+// the operator 3D context alongside the 2D map during navigation.
 //
 // Service ~/load_pcd                tmms_msgs/srv/StringTrigger, data = bare map name
 // Output  /downsampled_pcd_map      (pcl::PointXYZI,       point_step 32)
 //
-// The second pair is the navigation-time counterpart of the first: once a session is over
-// there is no /Laser_map, but the operator still wants the 3D scene alongside the 2D map they
-// just loaded. Same voxel grid, same reason -- a saved .pcd is every bit as unstreamable as
-// the live topic it came from. Latched rather than periodic, since a file on disk does not
-// change; see the pub_qos comment.
+// A raw .pcd is far too large for rosbridge. A voxel grid makes the point count track
+// mapped-surface-area / leaf^2 instead of the number of scans that went into the file, and
+// dropping the normals and curvature (48 -> 32 B/pt) is a further 1.5x on top.
 //
-// Why this exists: publish_map() accumulates into pcl_wait_pub and never clears it, then
-// re-serialises the WHOLE buffer every tick (laserMapping.cpp:592-595) on a 1 Hz timer. The
-// buffer has no deduplication, so a wall seen 100 times is stored 100 times and the cloud
-// grows with TIME rather than with area covered. At 855k points that is 41 MB every second,
-// which rosbridge (Python) cannot sustain -- the Lichtblick view freezes a minute or two in.
-//
-// A voxel grid changes the growth curve rather than just scaling it down: point count then
-// tracks mapped-surface-area / leaf^2, which SATURATES once a space has been covered.
-// Dropping the normals and curvature (48 -> 32 B/pt) is a further 1.5x on top.
-//
-// This is a separate node rather than a patch to publish_map() for two reasons:
-//   1. FAST-LIO spins a single-threaded rclcpp::spin() (laserMapping.cpp:1162), so a
-//      VoxelGrid over a growing cloud (50-100 ms and rising) would land directly on the
-//      thread running state estimation.
-//   2. save_to_pcd() writes pcl_wait_pub itself (laserMapping.cpp:611). A separate
-//      subscriber cannot touch that buffer, so /map_save output is unaffected BY
-//      CONSTRUCTION -- there is no way for a leaf-size change here to degrade a saved map.
-//
-// Stateless: every input message is the full map, so re-filtering per message needs no
-// history and self-heals if FAST-LIO restarts and the map resets.
+// The live map during a mapping session is not done here: FAST-LIO publishes its own
+// /downsampled_fastlio_map.
 
 #include <algorithm>
 #include <cctype>
@@ -89,19 +66,13 @@ public:
   MapDownsamplerNode()
   : rclcpp::Node("map_downsampler")
   {
-    input_topic_ = declare_parameter<std::string>("input_topic", "/Laser_map");
-    // Absolute: a relative name would resolve under the node namespace as
-    // /map_downsampler/downsampled_fastlio_map.
-    output_topic_ = declare_parameter<std::string>("output_topic", "/downsampled_fastlio_map");
     pcd_output_topic_ = declare_parameter<std::string>("pcd_output_topic", "/downsampled_pcd_map");
     leaf_size_ = declare_parameter<double>("leaf_size", 0.5);
-    min_publish_period_s_ = declare_parameter<double>("min_publish_period_s", 0.0);
     // Root of the map store; ~/load_pcd reads <maps_dir>/pcd/<name>.pcd. Every node in the
     // workspace takes the ROOT and derives the subfolder, so there is one path to configure.
     maps_dir_ = expandUser(declare_parameter<std::string>("maps_dir", "~/.htxgrrt/maps"));
-    // A .pcd carries no frame. The live path passes FAST-LIO's header through untouched
-    // (camera_init); a loaded map is whatever the 2D map alongside it is anchored to, which
-    // for nav2 is `map`.
+    // A .pcd carries no frame: a loaded map is whatever the 2D map alongside it is anchored
+    // to, which for nav2 is `map`.
     pcd_frame_id_ = declare_parameter<std::string>("pcd_frame_id", "map");
 
     if (leaf_size_ <= 0.0) {
@@ -110,16 +81,9 @@ public:
       leaf_size_ = 0.5;
     }
 
-    // FAST-LIO publishes /Laser_map with a bare depth (laserMapping.cpp:932), so the offered
-    // QoS is RELIABLE + VOLATILE. This subscription MUST stay volatile: a TRANSIENT_LOCAL
-    // subscriber against a VOLATILE publisher is an incompatible pair and would receive
-    // nothing at all. Depth 1 because these messages are tens of megabytes -- a deeper queue
-    // would hold several whole maps at once, and only the newest is ever useful.
-    const auto sub_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
-
-    // Output is TRANSIENT_LOCAL so a late joiner gets the current map immediately instead of
-    // a blank panel until the next publish. That matters here: this is a coverage display
-    // refreshed at ~1 Hz at best, and slower as the input map grows.
+    // TRANSIENT_LOCAL, and for this topic latching is the entire delivery mechanism: a loaded
+    // .pcd is published exactly once per load, so a subscriber that joins afterwards would
+    // otherwise see nothing at all.
     //
     // rosbridge picks this up on its own -- subscribers.py::_get_default_qos_profile sets the
     // subscription to TRANSIENT_LOCAL + RELIABLE when every publisher on the topic offers
@@ -130,35 +94,23 @@ public:
     // subscribes before this node is up it falls back to VOLATILE (still compatible, just not
     // latched) and stays that way until it re-subscribes.
     const auto pub_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
-
-    pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(output_topic_, pub_qos);
-    // Same profile, and for this topic latching is the entire delivery mechanism: a loaded
-    // .pcd is published exactly once and never again, so a subscriber that joins afterwards
-    // would otherwise see nothing at all.
     pcd_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(pcd_output_topic_, pub_qos);
-
-    sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-      input_topic_, sub_qos,
-      std::bind(&MapDownsamplerNode::callback, this, std::placeholders::_1));
 
     load_srv_ = create_service<tmms_msgs::srv::StringTrigger>(
       "~/load_pcd",
       std::bind(&MapDownsamplerNode::loadPcdCallback, this,
                 std::placeholders::_1, std::placeholders::_2));
 
-    RCLCPP_INFO(get_logger(),
-                "map_downsampler: %s -> %s (leaf %.3f m, min_period %.2f s)",
-                input_topic_.c_str(), output_topic_.c_str(), leaf_size_, min_publish_period_s_);
-    RCLCPP_INFO(get_logger(), "map_downsampler: %s/pcd/<name>.pcd -> %s (frame %s)",
-                maps_dir_.c_str(), pcd_output_topic_.c_str(), pcd_frame_id_.c_str());
+    RCLCPP_INFO(get_logger(), "map_downsampler: %s/pcd/<name>.pcd -> %s (leaf %.3f m, frame %s)",
+                maps_dir_.c_str(), pcd_output_topic_.c_str(), leaf_size_, pcd_frame_id_.c_str());
   }
 
 private:
   // PCL's VoxelGrid does NOT error out when the leaf is too small for the cloud's extent --
   // voxel_grid.hpp:248-258 emits a PCL_WARN and then does `output = *input_; return;`, i.e.
   // it passes the cloud through COMPLETELY UNFILTERED. On a large map that means silently
-  // republishing the full 41 MB cloud, defeating the entire purpose of this node, with
-  // nothing but a stderr warning to show for it.
+  // publishing the full cloud, defeating the entire purpose of this node, with nothing but a
+  // stderr warning to show for it.
   //
   // So replicate PCL's check up front and refuse to publish instead. Returns true if
   // filtering is safe.
@@ -191,48 +143,7 @@ private:
     return false;
   }
 
-  void callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
-  {
-    if (min_publish_period_s_ > 0.0) {
-      const auto now = this->now();
-      if (last_pub_time_.nanoseconds() != 0 &&
-          (now - last_pub_time_).seconds() < min_publish_period_s_)
-      {
-        return;
-      }
-      last_pub_time_ = now;
-    }
-
-    // Field-matches x/y/z/intensity by name; the source's normal_x/y/z and curvature are
-    // simply not mapped. FAST-LIO's intensity survives, so Lichtblick can still colour by it.
-    //
-    // Built as a Ptr rather than a value + makeShared(): setInputCloud needs a shared_ptr,
-    // and makeShared() would deep-copy the whole cloud -- ~27 MB per message at the sizes
-    // this node exists to deal with.
-    auto in = std::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
-    pcl::fromROSMsg(*msg, *in);
-
-    // Header passed through untouched: the frame must stay whatever FAST-LIO published
-    // (camera_init) or the cloud lands in the wrong place in the TF tree.
-    std::string summary;
-    if (!downsampleAndPublish(in, msg->header, pub_, msg->data.size(), summary)) {
-      return;
-    }
-
-    // Printed so the reduction is visible and the leaf is tunable from the terminal. If the
-    // output count stops climbing while the input keeps growing, saturation is working.
-    //
-    // Watch `took`: /Laser_map arrives at 1 Hz, and the subscription is KeepLast(1), so once
-    // deserialise + filter exceeds ~1 s the intervening messages are dropped and the OUTPUT
-    // rate falls to 1/took. A downsampled topic publishing slower than 1 Hz is this, not a
-    // bug -- the cost scales with the input map, which grows for the whole session.
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000, "%s", summary.c_str());
-  }
-
-  // Reads <maps_dir>/pcd/<name>.pcd and puts it out on pcd_output_topic_, voxelised exactly
-  // like the live path. Runs on the default callback group alongside the subscription, which
-  // serialises the two -- deliberate, since during navigation /Laser_map does not exist and
-  // during mapping nobody is loading a saved map.
+  // Reads <maps_dir>/pcd/<name>.pcd, voxelises it and puts it out on pcd_output_topic_.
   void loadPcdCallback(
     const tmms_msgs::srv::StringTrigger::Request::SharedPtr req,
     tmms_msgs::srv::StringTrigger::Response::SharedPtr res)
@@ -266,7 +177,7 @@ private:
     const std::size_t input_bytes = in->size() * 32;
 
     std::string summary;
-    if (!downsampleAndPublish(in, header, pcd_pub_, input_bytes, summary)) {
+    if (!downsampleAndPublish(in, header, input_bytes, summary)) {
       res->success = false;
       res->message = "loaded " + path + " but nothing could be published; see the node log "
                      "(usually leaf_size too small for the map extent)";
@@ -280,12 +191,11 @@ private:
                 summary.c_str());
   }
 
-  // The one filter path, shared by the live topic and the loaded file. Returns false and
-  // publishes nothing if the cloud is empty or the leaf is unsafe for its extent.
+  // Returns false and publishes nothing if the cloud is empty or the leaf is unsafe for its
+  // extent.
   bool downsampleAndPublish(
     const pcl::PointCloud<pcl::PointXYZI>::Ptr & in,
     const std_msgs::msg::Header & header,
-    const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr & pub,
     std::size_t input_bytes,
     std::string & summary)
   {
@@ -315,7 +225,7 @@ private:
     sensor_msgs::msg::PointCloud2 out_msg;
     pcl::toROSMsg(out, out_msg);
     out_msg.header = header;
-    pub->publish(out_msg);
+    pcd_pub_->publish(out_msg);
 
     const double took = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - t_start).count();
@@ -345,17 +255,11 @@ private:
     return std::string(home) + path.substr(1);
   }
 
-  std::string input_topic_;
-  std::string output_topic_;
   std::string pcd_output_topic_;
   std::string maps_dir_;
   std::string pcd_frame_id_;
   double leaf_size_{0.5};
-  double min_publish_period_s_{0.0};
-  rclcpp::Time last_pub_time_{0, 0, RCL_ROS_TIME};
 
-  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pcd_pub_;
   rclcpp::Service<tmms_msgs::srv::StringTrigger>::SharedPtr load_srv_;
 };

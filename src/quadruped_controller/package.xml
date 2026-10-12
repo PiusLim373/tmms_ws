@@ -13,6 +13,7 @@
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>rosgraph_msgs</depend>
   <depend>unitree_api</depend>
   <depend>unitree_go</depend>
   <depend>std_msgs</depend>
