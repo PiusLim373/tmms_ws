@@ -8,18 +8,28 @@ import { camOfSnapshot, formatPoiTime, map2dSnapshotUrl, POI_CAMS } from '../../
 
 const camTitle = (f) => POI_CAMS.find((c) => c.key === camOfSnapshot(f))?.title ?? f
 
-// Next to the marker, flipped to the other side when it would run off the map.
-// props: point, at (screen px in the map), mapName, bounds ({ width, height } of the map area)
-export function C2PoiHoverCard({ point, at, mapName, bounds }) {
+// Next to the marker, flipped to the other side when it would run off the map. Clicking it opens
+// the viewer.
+// props: point, at (screen px in the map), mapName, bounds ({ width, height } of the map area),
+//        onOpen(), onPointerEnter(), onPointerLeave()
+export function C2PoiHoverCard({ point, at, mapName, bounds, onOpen, onPointerEnter, onPointerLeave }) {
   const width = 300
-  const left = at.x + 24 + width > bounds.width ? at.x - 24 - width : at.x + 24
+  // Close to the marker, so the pointer can cross the gap before the card goes.
+  const left = at.x + 18 + width > bounds.width ? at.x - 18 - width : at.x + 18
   const top = Math.max(8, Math.min(at.y - 20, bounds.height - 230))
   const { description, snapshots } = point.poi
   return (
     <div
       className="panel"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }}
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+      title="Open the photos"
       style={{
-        position: 'absolute', left, top, width, padding: 8, pointerEvents: 'none', zIndex: 7,
+        position: 'absolute', left, top, width, padding: 8, zIndex: 7, cursor: 'pointer',
         display: 'flex', flexDirection: 'column', gap: 6, boxShadow: '0 6px 18px rgba(0,0,0,0.45)',
       }}
     >
@@ -47,7 +57,7 @@ export function C2PoiHoverCard({ point, at, mapName, bounds }) {
       ) : (
         <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>No photos.</div>
       )}
-      <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>Click to open the photos</div>
+      <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>Click this card to open the photos</div>
     </div>
   )
 }

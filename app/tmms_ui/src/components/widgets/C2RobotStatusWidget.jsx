@@ -80,7 +80,7 @@ export function C2RobotStatusWidget({
   driveBlocker, target, plan, goBlocker, routeNote, busy, result,
   reloc, posePin, onStartReloc, onCancelReloc, onSendReloc,
   toBlocker, routeMode, activePlan, onGoTo, onGoThrough, onCancelRoute, onSendRoute,
-  walking, navPathShown, hasHome, onReturnHome,
+  walking, navPathShown, hasHome, onReturnHome, standBlocker,
   onPause, onCancelGoal,
   scanHint, planLog,
 }) {
@@ -199,7 +199,7 @@ export function C2RobotStatusWidget({
               <button className="btn-icon" style={{ ...btn, flex: 1 }} onClick={onCancelRoute}>
                 Cancel
               </button>
-              <button className="btn-icon" style={{ ...primaryBtn, flex: 2 }} disabled={busy} onClick={onSendRoute}>
+              <button className="btn-icon" style={{ ...primaryBtn, flex: 2 }} disabled={busy || Boolean(standBlocker)} onClick={onSendRoute}>
                 Send ▶
               </button>
             </div>
@@ -209,7 +209,7 @@ export function C2RobotStatusWidget({
             <button
               className="btn-icon"
               style={{ ...primaryBtn, flex: 1 }}
-              disabled={Boolean(driveBlocker || toBlocker) || busy}
+              disabled={Boolean(driveBlocker || standBlocker || toBlocker) || busy}
               onClick={onGoTo}
               title={toBlocker ?? 'Send only the destination; the robot plans its own way there'}
             >
@@ -218,7 +218,7 @@ export function C2RobotStatusWidget({
             <button
               className="btn-icon"
               style={{ ...primaryBtn, flex: 1 }}
-              disabled={Boolean(driveBlocker || goBlocker) || !plan || busy}
+              disabled={Boolean(driveBlocker || standBlocker || goBlocker) || !plan || busy}
               onClick={onGoThrough}
               title={goBlocker ?? 'Follow your links, through your waypoints'}
             >
@@ -226,16 +226,38 @@ export function C2RobotStatusWidget({
             </button>
           </div>
         )}
-        <button
-          className="btn-icon"
-          style={btn}
-          disabled={Boolean(driveBlocker) || !hasHome || busy}
-          onClick={onReturnHome}
-          title={hasHome ? 'Show the way back to Home, then Send' : 'Place a Home pin in this graph first'}
-        >
-          ⌂ Return home{hasHome ? '' : ' (no Home pin in this graph)'}
-        </button>
+        {hasHome ? (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              className="btn-icon"
+              style={{ ...btn, flex: 1 }}
+              disabled={Boolean(driveBlocker || standBlocker) || busy}
+              onClick={() => onReturnHome('to')}
+              title="Send only Home; the robot plans its own way back"
+            >
+              ⌂ Go to Home
+            </button>
+            <button
+              className="btn-icon"
+              style={{ ...btn, flex: 1 }}
+              disabled={Boolean(driveBlocker || standBlocker) || busy}
+              onClick={() => onReturnHome('through')}
+              title="Follow your links back to Home"
+            >
+              ⌂ Home through links
+            </button>
+          </div>
+        ) : (
+          <button className="btn-icon" style={btn} disabled title="Place a Home pin in this graph first">
+            ⌂ Return home (no Home pin in this graph)
+          </button>
+        )}
 
+        {standBlocker && !driveBlocker && (
+          <div role="alert" style={{ fontSize: 11, color: '#FBBF24', lineHeight: 1.5, border: '1px solid #FBBF24', borderRadius: 4, padding: '6px 8px' }}>
+            {standBlocker}
+          </div>
+        )}
         {!activePlan && !driveBlocker && (toBlocker || goBlocker) && (
           <div style={{ fontSize: 10, color: (toBlocker ?? goBlocker).startsWith('Select') ? 'var(--text-dim)' : '#FBBF24', lineHeight: 1.5 }}>
             {toBlocker ?? <>Go through links: {goBlocker}</>}

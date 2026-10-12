@@ -6,6 +6,7 @@
 //   selected link  accent
 //   pending link   while linking: from the first point to the pointer
 //   planned route  bright accent: robot -> first stop dashed (drawn round walls), then the stops;
+//                  Go to's nav2 path is dotted instead
 //                  while it is being walked, legs already done are grey
 const LINK_COLOR = 'rgba(100, 116, 139, 0.9)'
 const WALL_COLOR = 'rgba(217, 119, 6, 0.95)'
@@ -49,12 +50,15 @@ export function drawGraphLayer(ctx, toScreen, { points, links, selectedKey, pend
 
   if (plan) {
     ctx.lineWidth = 5
+    // Go to draws nav2's own path dotted (`dashed`), so it reads apart from a route along links.
+    if (plan.dashed) ctx.setLineDash([2, 9])
     // While a route is being walked, the legs already done turn grey (`doneLegs` of them).
     const done = plan.doneLegs ?? 0
     plan.legs.forEach((leg, k) => {
       ctx.strokeStyle = k < done ? DONE_COLOR : accent
       polyline(leg)
     })
+    ctx.setLineDash([])
     ctx.strokeStyle = accent
     ctx.setLineDash([7, 5])
     polyline(plan.robotLeg)

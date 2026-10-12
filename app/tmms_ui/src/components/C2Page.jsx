@@ -41,18 +41,29 @@ const NO_LINKS = []
 const isMapPoint = (id) => typeof id === 'string' && id.startsWith('poi_')
 // The graph last opened on each map, so it opens again by itself next time.
 const LAST_GRAPH_KEY = 'tmms.c2.lastGraph'
-// Map view toggles (show Pius's points, show names) are remembered per browser.
+// Map view toggles (show names) are remembered per browser.
 const VIEW_PREFS_KEY = 'tmms.c2.mapView'
 function loadViewPrefs() {
-  try { return { mapPoints: true, names: true, ...JSON.parse(localStorage.getItem(VIEW_PREFS_KEY) ?? '{}') } }
-  catch { return { mapPoints: true, names: true } }
+  try { return { names: JSON.parse(localStorage.getItem(VIEW_PREFS_KEY) ?? '{}').names ?? true } }
+  catch { return { names: true } }
 }
+// How long a hover card stays after the pointer leaves the point, so it can be moved onto the card.
+const HOVER_CARD_LINGER_MS = 250
 // Every point can be linked: Points of Interest, Simple waypoints and Home.
 const canLink = (p) => Boolean(p)
 // How close the robot must come to a stop for it to count as reached. Matches nav2's
 // RemovePassedGoals radius, which drops a stop once the robot is this close.
 const STOP_REACHED_M = 0.7
 const FINAL_PLAN_STATES = new Set(['completed', 'cancelled', 'errored', 'rejected'])
+// robot_mode values where the robot is down, with how they read to the operator. nav2 doesn't
+// stand the robot up (only Unpause runs balance_stand), so a route sent in one of these is
+// accepted and "executing" while the robot never moves. Only the plainly-down modes: the B2
+// reports `pose` while standing ready after balance_stand, so the standing modes are let through.
+const NOT_STANDING = {
+  damping: 'lying limp (damping)',
+  lie_down: 'lying down',
+  sit: 'sitting',
+}
 
 export function C2Page() {
 
@@ -514,16 +525,12 @@ export function C2Page() {
   // Clicking a point: normally selects it. With the Link tool on, the first click picks the start
   // and each next click links it to the previous one, so A, B, C links A-B and B-C. Clicking a
   // pair that is already linked removes that link.
-  // Clicking one of Pius's points opens its photos. Only when not editing: while editing, a click
-  // is for moving and linking. It stays selected after the viewer closes, ready for Go.
+  // The photo viewer of one of Pius's points. Opened from its hover card, never by clicking the
+  // point: a click on the point only selects it, ready for Go.
   const [viewerId, setViewerId] = useState(null)
   const selectPoint = useCallback((id) => {
     setSelectedLink(null)
-    if (!linkMode) {
-      setSelectedId(id)
-      if (!canEdit && isMapPoint(id)) setViewerId(id)
-      return
-    }
+    if (!linkMode) { setSelectedId(id); return }
     if (!id) { setLinkStart(null); return }
     const point = graphPoints.find((p) => p.id === id)
     if (!canLink(point)) return
@@ -532,7 +539,7 @@ export function C2Page() {
     setLinkKeys((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
     setLinkStart(id)
     setSelectedId(id)
-  }, [linkMode, linkStart, graphPoints, canEdit])
+  }, [linkMode, linkStart, graphPoints])
 
   const toggleLinkMode = useCallback(() => {
     setLinkMode((on) => !on)
@@ -617,6 +624,11 @@ export function C2Page() {
     : selectedMap.source === 'upload'
       ? `${selectedMap.name} was uploaded to this browser only — the robot doesn't have it. Pick a map from the store.`
       : null
+  // Blocks sending a route (not relocalize) until the robot is standing.
+  const notStanding = statusLive ? NOT_STANDING[robot?.mode] : null
+  const standBlocker = notStanding
+    ? `The robot is ${notStanding}. Stand it up first (Dashboard → WALK, or the remote), then send the route.`
+    : null
 
   // -- going to a point ----------------------------------------------------------
   // The selected point is the destination. The way there: the robot walks by itself to the point
@@ -677,26 +689,30 @@ export function C2Page() {
     : null
 
   // Any change of destination, or going back to placing points, drops the preview — except when
-  // Return home just picked Home, which opens the preview for it straight away.
-  const autoPreviewRef = useRef(false)
-  const openPreviewFor = useCallback(() => {
-    if (plan?.ok && !goBlocker) setRouteMode('through')
-    else if (!toBlocker && directPlan) setRouteMode('to')
+  // Return home just picked Home, which opens the preview for it straight away, in the way the
+  // operator chose ('to' or 'through'). If that way can't reach Home, nothing opens and the
+  // reason shows under the Go buttons.
+  const autoPreviewRef = useRef(null)
+  const openPreviewFor = useCallback((mode) => {
+    if (mode === 'through' && plan?.ok && !goBlocker) setRouteMode('through')
+    else if (mode === 'to' && !toBlocker && directPlan) setRouteMode('to')
     else setRouteMode(null)
   }, [plan, goBlocker, toBlocker, directPlan])
   useEffect(() => {
-    if (autoPreviewRef.current) { autoPreviewRef.current = false; openPreviewFor() } else setRouteMode(null)
+    const mode = autoPreviewRef.current
+    autoPreviewRef.current = null
+    if (mode) openPreviewFor(mode); else setRouteMode(null)
   }, [selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Return home: select Home and show the way there. Follows the links when they reach Home,
-  // otherwise lets nav2 plan its own way.
+  // Return home: select Home and show the way there, the same two ways as any destination:
+  // 'to' (nav2 plans its own way) or 'through' (follow the links).
   const homePin = pins.find((p) => p.type === 'home') ?? null
-  function handleReturnHome() {
-    if (!homePin) return
+  function handleReturnHome(mode) {
+    if (!homePin || standBlocker) return
     setPlacingType(null)
     setLinkMode(false)
-    if (selectedId === homePin.id) openPreviewFor()
-    else { autoPreviewRef.current = true; setSelectedId(homePin.id) }
+    if (selectedId === homePin.id) openPreviewFor(mode)
+    else { autoPreviewRef.current = mode; setSelectedId(homePin.id) }
   }
 
   // -- the route the robot is walking ------------------------------------------
@@ -726,38 +742,37 @@ export function C2Page() {
   }, [robot?.position?.x, robot?.position?.y, walking]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (placingType || reloc !== 'idle') setRouteMode(null) }, [placingType, reloc])
 
-  // "Hide Pius's points" only hides them from the map: they still count for routes. A hidden
-  // point still shows while it is selected or a stop on the route being previewed or walked.
-  const hiddenIds = useMemo(() => {
-    if (viewPrefs.mapPoints) return null
-    const keep = new Set([selectedId, ...(activePlan?.stops ?? []).map((p) => p.id),
-      ...(walking?.stops ?? []).map((p) => p.id)])
-    return new Set(mapPoints.filter((p) => !keep.has(p.id)).map((p) => p.id))
-  }, [viewPrefs.mapPoints, selectedId, activePlan, walking, mapPoints])
-  const shownPoints = useMemo(
-    () => (hiddenIds ? allPoints.filter((p) => !hiddenIds.has(p.id)) : allPoints), [allPoints, hiddenIds])
-  const shownLinks = useMemo(
-    () => (hiddenIds ? links.filter((l) => !hiddenIds.has(l.a) && !hiddenIds.has(l.b)) : links), [links, hiddenIds])
-  const canvasPins = useMemo(() => (posePin ? [...shownPoints, posePin] : shownPoints), [shownPoints, posePin])
+  const canvasPins = useMemo(() => (posePin ? [...allPoints, posePin] : allPoints), [allPoints, posePin])
   const viewerPoint = mapPoints.find((p) => p.id === viewerId) ?? null
   // The map point under the pointer, for its hover card. Same reach as clicking it.
   const hoveredMapPoint = useMemo(() => {
     if (!hover || !info || viewerId) return null
     const h = toScreenPt(hover)
-    return shownPoints.find((p) => p.source === 'mapping' && Math.hypot(toScreenPt(p).x - h.x, toScreenPt(p).y - h.y) <= 16) ?? null
-  }, [hover, info, viewerId, shownPoints, toScreenPt])
+    return mapPoints.find((p) => Math.hypot(toScreenPt(p).x - h.x, toScreenPt(p).y - h.y) <= 16) ?? null
+  }, [hover, info, viewerId, mapPoints, toScreenPt])
+  // The card shown: follows the hovered point, but lingers a moment after the pointer leaves it,
+  // and stays while the pointer is on the card, so the card itself can be clicked.
+  const [cardId, setCardId] = useState(null)
+  const onCardRef = useRef(false)
+  useEffect(() => {
+    if (hoveredMapPoint) { setCardId(hoveredMapPoint.id); return undefined }
+    if (viewerId) { setCardId(null); return undefined }
+    const t = setTimeout(() => { if (!onCardRef.current) setCardId(null) }, HOVER_CARD_LINGER_MS)
+    return () => clearTimeout(t)
+  }, [hoveredMapPoint, viewerId])
+  const cardPoint = mapPoints.find((p) => p.id === cardId) ?? null
 
   const drawUnder = useCallback((ctx, toScreen) => {
     const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent-bright').trim() || '#7C3AED'
     const from = linkMode && linkStart ? graphPoints.find((p) => p.id === linkStart) : null
     drawGraphLayer(ctx, toScreen, {
       points: graphPoints,
-      links: shownLinks,
+      links,
       selectedKey: selectedLink,
       pending: from && hover ? { from, to: hover } : null,
       plan: activePlan ?? (walking
         ? walking.mode === 'to'
-          ? { robotLeg: null, legs: navPath?.length > 1 ? [navPath] : [] }
+          ? { robotLeg: null, legs: navPath?.length > 1 ? [navPath] : [], dashed: true }
           : {
             robotLeg: walking.reached > 0 ? null : walking.robotLeg,
             legs: walking.legs,
@@ -766,7 +781,7 @@ export function C2Page() {
         : null),
       accent,
     })
-  }, [graphPoints, shownLinks, selectedLink, linkMode, linkStart, hover, activePlan, walking, navPath])
+  }, [graphPoints, links, selectedLink, linkMode, linkStart, hover, activePlan, walking, navPath])
 
   // Linking only makes sense while the graph is being edited.
   useEffect(() => { if (!canEdit) { setLinkMode(false); setLinkStart(null) } }, [canEdit])
@@ -784,7 +799,7 @@ export function C2Page() {
   }
 
   function handleGo(mode) {
-    if (driveBlocker) return
+    if (driveBlocker || standBlocker) return
     if (mode === 'to' && (toBlocker || !directPlan)) return
     if (mode === 'through' && (goBlocker || !plan?.ok)) return
     setPlacingType(null)
@@ -792,7 +807,7 @@ export function C2Page() {
   }
 
   function handleSendRoute() {
-    if (driveBlocker || !activePlan) return
+    if (driveBlocker || standBlocker || !activePlan) return
     const navplan = {
       navplanId: nextNavplanId(),
       // The map the pins were drawn on, not the robot's. The robot refuses the route when it is
@@ -1010,15 +1025,6 @@ export function C2Page() {
               <button
                 className="btn-icon"
                 style={{ fontSize: 11, padding: '4px 8px', background: 'var(--panel-bg)' }}
-                onClick={() => toggleViewPref('mapPoints')}
-                aria-pressed={!viewPrefs.mapPoints}
-                title="Pius's points from mapping. Hidden ones still count for routes."
-              >
-                {viewPrefs.mapPoints ? '◉ Hide mapping points' : '○ Show mapping points'}
-              </button>
-              <button
-                className="btn-icon"
-                style={{ fontSize: 11, padding: '4px 8px', background: 'var(--panel-bg)' }}
                 onClick={() => toggleViewPref('names')}
                 aria-pressed={!viewPrefs.names}
                 title="Name labels over the points. The selected point always shows its name."
@@ -1029,12 +1035,15 @@ export function C2Page() {
 
           </div>
 
-          {hoveredMapPoint && (
+          {cardPoint && (
             <C2PoiHoverCard
-              point={hoveredMapPoint}
-              at={toScreenPt(hoveredMapPoint)}
+              point={cardPoint}
+              at={toScreenPt(cardPoint)}
               mapName={mapName}
               bounds={canvasSize}
+              onOpen={() => { onCardRef.current = false; setViewerId(cardPoint.id) }}
+              onPointerEnter={() => { onCardRef.current = true }}
+              onPointerLeave={() => { onCardRef.current = false; setCardId(null) }}
             />
           )}
 
@@ -1272,6 +1281,7 @@ export function C2Page() {
             onGoThrough={() => handleGo('through')}
             onCancelRoute={() => setRouteMode(null)}
             onSendRoute={handleSendRoute}
+            standBlocker={standBlocker}
             onPause={handlePause}
             onCancelGoal={handleCancelGoal}
             scanHint={scanHint}
