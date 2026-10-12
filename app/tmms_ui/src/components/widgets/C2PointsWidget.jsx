@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { formatMetres } from '../../lib/c2Coords'
+import { degFromYaw, formatMetres } from '../../lib/c2Coords'
 import {
   PIN_TYPES, PIN_META, HEADING_TYPES, defaultName, displayName, effectiveYaw, routeOrder,
 } from '../../lib/c2Pins'
@@ -19,6 +19,14 @@ const subHeadStyle = {
   letterSpacing: '0.08em', color: 'var(--text-dim)',
 }
 
+const STORE_STATUS = {
+  loading: { text: 'loading…', color: 'var(--text-dim)', title: 'Fetching saved graphs' },
+  saved: { text: '● saved', color: '#4ADE80', title: 'Every change is saved on the robot' },
+  saving: { text: 'saving…', color: '#60A5FA', title: 'Saving your latest change' },
+  retrying: { text: '⚠ not saved — retrying', color: '#FBBF24', title: 'The last save failed; retrying every few seconds' },
+  offline: { text: '⚠ storage offline', color: '#F87171', title: 'C2 storage is not reachable. Changes are kept in this tab only until it comes back.' },
+}
+
 function Field({ label, children }) {
   return (
     <label className="flex flex-col gap-1">
@@ -35,14 +43,16 @@ export function C2PointsWidget({
   canUndo, canRedo, onUndo, onRedo,
   graph, graphs, panelMode, onPanelMode,
   onCreateGraph, onLoadGraph, onToggleEdit, onCloseGraph,
-  onArm, onSelect, onRemove, onReorder, onChange, onSetYaw,
+  onArm, onSelect, onRemove, onChange, onSetYaw,
+  storeStatus, mapPoints = [],
+  linkMode = false, linkStartName = null, linkCount = 0, onToggleLinkMode,
 }) {
-  const [dragId, setDragId] = useState(null)
-  const [overIndex, setOverIndex] = useState(null)
+  const store = STORE_STATUS[storeStatus]
   const [draftName, setDraftName] = useState('')
 
   const ordered = routeOrder(pins)
-  const selected = pins.find((p) => p.id === selectedId) ?? null
+  const selectedMapPoint = mapPoints.find((p) => p.id === selectedId) ?? null
+  const selected = selectedMapPoint ? null : pins.find((p) => p.id === selectedId) ?? null
   const graphOpen = Boolean(graph)
   const disabled = !graphOpen || !editable
   const nameInvalid = draftName.length > 0 && !GRAPH_NAME_RE.test(draftName)
@@ -61,7 +71,10 @@ export function C2PointsWidget({
     <div className="panel flex flex-col h-full" style={{ overflow: 'hidden' }}>
       <div className="panel-header">
         <span>MISSION</span>
-        <span className="val-mono" style={{ fontSize: 11 }}>{ordered.length}</span>
+        <span className="val-mono" style={{ fontSize: 10, display: 'flex', gap: 10 }}>
+          {store && <span style={{ color: store.color }} title={store.title}>{store.text}</span>}
+          <span style={{ fontSize: 11 }}>{ordered.length + mapPoints.length}</span>
+        </span>
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -249,7 +262,8 @@ export function C2PointsWidget({
           1. Load a map at the top — from the store, or a .png with its .yaml.<br />
           2. Create a graph here to start marking that map up.<br />
           3. With the graph in edit mode, arm a pin type and click the canvas.<br />
-          4. Give each action waypoint a facing and what to investigate.<br />
+          4. Use Link points to join points the robot may travel between. Only linked points connect.<br />
+          5. Select a Point of Interest or Home, then press Go. The robot follows your links to get there.<br />
           Ctrl+Z undo · Ctrl+Y redo · Del removes the selected pin.
         </div>
 
@@ -303,6 +317,36 @@ export function C2PointsWidget({
           })}
         </div>
 
+        <button
+          disabled={disabled}
+          onClick={onToggleLinkMode}
+          title={disabled ? 'Open a graph and turn on Edit graph first' : 'Join two points the robot may travel between'}
+          className="flex items-center gap-2"
+          style={{
+            padding: '6px 8px', borderRadius: 4, textAlign: 'left',
+            border: `1px solid ${linkMode ? 'var(--accent-bright)' : 'var(--border)'}`,
+            background: linkMode ? 'color-mix(in srgb, var(--accent-bright) 18%, transparent)' : 'transparent',
+            color: 'var(--text)', cursor: disabled ? 'not-allowed' : 'pointer', font: 'inherit',
+            opacity: disabled ? 0.45 : 1,
+          }}
+        >
+          <span style={{ width: 16, textAlign: 'center' }}>🔗</span>
+          <span style={{ fontSize: 12, color: 'var(--text-h)' }}>Link points</span>
+          <span className="val-mono" style={{ marginLeft: 'auto', fontSize: 10, color: linkMode ? 'var(--accent-bright)' : 'var(--text-dim)' }}>
+            {linkMode ? 'ON' : `${linkCount} link${linkCount === 1 ? '' : 's'}`}
+          </span>
+        </button>
+
+        {linkMode && (
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+            {linkStartName
+              ? <>Linking from <b style={{ color: 'var(--text-h)' }}>{linkStartName}</b>. Click the next point to link it — keep clicking to chain.</>
+              : 'Click a point to start, then click another to link them.'}
+            {' '}Clicking an already-linked pair removes that link. Click a link on the map to remove it.
+            {' '}<span className="val-mono" style={{ fontSize: 10 }}>Esc</span> to stop.
+          </div>
+        )}
+
         {placingType && (
           <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.4 }}>
             Click the map to place a {PIN_META[placingType].label.toLowerCase()} — and keep
@@ -314,44 +358,31 @@ export function C2PointsWidget({
 
         <div style={{ borderTop: '1px solid var(--border)' }} />
 
-        <div style={subHeadStyle}>Route order</div>
+        <div style={subHeadStyle}>Points on this map</div>
 
-        {ordered.length === 0 ? (
+        {mapPoints.length === 0 && ordered.length === 0 ? (
           <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-            No pins yet. Arm a type above, then click the map.
+            No points yet. Arm a type above, then click the map.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            {ordered.map((pin, index) => {
+            {[...mapPoints, ...ordered].map((pin) => {
+              const fromMap = pin.source === 'mapping'
               const isSelected = pin.id === selectedId
-              const isDropTarget = overIndex === index && dragId && dragId !== pin.id
               return (
                 <div
                   key={pin.id}
-                  draggable={!disabled}
-                  onDragStart={() => setDragId(pin.id)}
-                  onDragOver={(e) => { e.preventDefault(); setOverIndex(index) }}
-                  onDrop={() => {
-                    if (dragId && dragId !== pin.id) onReorder(dragId, index)
-                    setDragId(null)
-                    setOverIndex(null)
-                  }}
-                  onDragEnd={() => { setDragId(null); setOverIndex(null) }}
                   onClick={() => onSelect(pin.id)}
                   className="flex items-center gap-2"
                   style={{
                     padding: '5px 6px',
-                    cursor: disabled ? 'pointer' : 'grab',
+                    cursor: 'pointer',
                     borderRadius: 4,
-                    borderTop: `2px solid ${isDropTarget ? 'var(--accent-bright)' : 'transparent'}`,
                     background: isSelected
                       ? 'color-mix(in srgb, var(--accent-bright) 18%, transparent)'
                       : 'transparent',
                   }}
                 >
-                  <span className="val-mono" style={{ fontSize: 10, color: 'var(--text-dim)', width: 14, flexShrink: 0 }}>
-                    {index + 1}
-                  </span>
                   <C2PinGlyph type={pin.type} size={14} />
                   <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
                     <span
@@ -362,23 +393,83 @@ export function C2PointsWidget({
                     </span>
                     <span className="val-mono" style={{ fontSize: 10, color: 'var(--text-dim)' }}>
                       {formatMetres(pin.x)}, {formatMetres(pin.y)} m
+                      {fromMap && ' · from mapping'}
                       {pin.type === 'action' && pin.action?.dwellSeconds > 0 && ` · ${pin.action.dwellSeconds}s`}
                     </span>
                   </span>
-                  <button
-                    className="btn-icon"
-                    style={{ fontSize: 11, padding: '2px 6px', flexShrink: 0 }}
-                    onClick={(e) => { e.stopPropagation(); onRemove(pin.id) }}
-                    disabled={disabled}
-                    title="Delete this pin (Del)"
-                    aria-label={`Delete ${displayName(pin, pins)}`}
-                  >
-                    ✕
-                  </button>
+                  {!fromMap && (
+                    <button
+                      className="btn-icon"
+                      style={{ fontSize: 11, padding: '2px 6px', flexShrink: 0 }}
+                      onClick={(e) => { e.stopPropagation(); onRemove(pin.id) }}
+                      disabled={disabled}
+                      title="Delete this pin (Del)"
+                      aria-label={`Delete ${displayName(pin, pins)}`}
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
               )
             })}
           </div>
+        )}
+
+        {selectedMapPoint && (
+          <>
+            <div style={{ borderTop: '1px solid var(--border)' }} />
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <C2PinGlyph type="action" size={14} />
+                <span style={{ fontSize: 12, color: 'var(--text-h)' }}>{selectedMapPoint.label}</span>
+              </span>
+              <button
+                className="btn-icon"
+                style={{ fontSize: 11, padding: '2px 6px' }}
+                onClick={() => onSelect(null)}
+                title="Deselect"
+              >
+                ✕
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+              Marked while mapping. While editing you can drag it to move it and turn it; it can't be renamed or deleted.
+            </div>
+            <Field label="Position (map frame)">
+              <span className="val-mono" style={{ fontSize: 11 }}>
+                x {formatMetres(selectedMapPoint.x)} m &nbsp; y {formatMetres(selectedMapPoint.y)} m
+                {selectedMapPoint.headingSet && ` · ${degFromYaw(selectedMapPoint.yaw)}°`}
+              </span>
+            </Field>
+            {selectedMapPoint.poi.description && (
+              <Field label="Description">
+                <span style={{ fontSize: 12, color: 'var(--text)' }}>{selectedMapPoint.poi.description}</span>
+              </Field>
+            )}
+            {selectedMapPoint.poi.timestamp && (
+              <Field label="Marked at">
+                <span className="val-mono" style={{ fontSize: 11 }}>{selectedMapPoint.poi.timestamp}</span>
+              </Field>
+            )}
+            {selectedMapPoint.poi.snapshots.length > 0 && (
+              <Field label="Snapshots">
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {selectedMapPoint.poi.snapshots.map((file) => {
+                    const src = `/api/maps2d/${encodeURIComponent(mapName)}/snapshots/${encodeURIComponent(file)}`
+                    return (
+                      <a key={file} href={src} target="_blank" rel="noreferrer" title={file}>
+                        <img
+                          src={src}
+                          alt={file}
+                          style={{ width: 96, height: 72, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)' }}
+                        />
+                      </a>
+                    )
+                  })}
+                </div>
+              </Field>
+            )}
+          </>
         )}
 
         {selected && (

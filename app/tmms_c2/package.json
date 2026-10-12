@@ -1,0 +1,13 @@
+{
+  "name": "tmms_c2",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node c2_backend.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "mongodb": "^6.20.0"
+  }
+}

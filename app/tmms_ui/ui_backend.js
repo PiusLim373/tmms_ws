@@ -922,6 +922,23 @@ app.post('/api/system/reboot/:target', (req, res) => {
   proxyToRebootManager(res, `/reboot/${target}`, { method: 'POST' })
 })
 
+const C2_BACKEND_URL = process.env.TMMS_C2_URL || 'http://127.0.0.1:3002'
+
+app.use('/api/c2', async (req, res) => {
+  try {
+    const hasBody = req.method !== 'GET' && req.method !== 'HEAD'
+    const upstream = await fetch(`${C2_BACKEND_URL}${req.url}`, {
+      method: req.method,
+      headers: { 'Content-Type': 'application/json' },
+      body: hasBody ? JSON.stringify(req.body ?? {}) : undefined,
+    })
+    res.status(upstream.status).type('application/json').send(await upstream.text())
+  } catch (err) {
+    console.error(`[ui_backend] C2 store ${req.method} ${req.url} failed:`, err.message)
+    res.status(503).json({ error: 'C2 store unreachable' })
+  }
+})
+
 if (isProd) {
   // `extensions` is what makes /navplan_tester resolve to dist/navplan_tester.html. There is
   // no SPA fallback here and the dashboard does not route by URL, so without it the second

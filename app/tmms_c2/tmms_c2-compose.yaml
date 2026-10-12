@@ -1,0 +1,23 @@
+services:
+  tmms_c2_mongo:
+    image: mongo:7
+    container_name: tmms_c2_mongo
+    network_mode: host
+    restart: unless-stopped
+    command: ["--bind_ip", "127.0.0.1", "--port", "27017"]
+    volumes:
+      - /home/unitree/.htxgrrt/c2/mongo:/data/db
+
+  tmms_c2:
+    image: tmms_c2_image:0.1.0
+    container_name: tmms_c2
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - tmms_c2_mongo
+    environment:
+      - PORT=3002
+      - HOST=127.0.0.1
+      - MONGO_URL=mongodb://127.0.0.1:27017
+    volumes:
+      - /home/unitree/.htxgrrt/bin/tmms_c2/c2_backend.js:/app/c2_backend.js:ro
