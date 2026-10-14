@@ -218,10 +218,11 @@ def generate_launch_description():
                     parameters=[{'maps_dir': maps_dir}]),
 
                 # Navigation state machine. Holds in UNLOCALIZED until localization_manager
-                # reports a fix, then forwards /lichtblick_navgoal to nav2 and routes the
-                # outcome to IDLE / CANCELED / NAVIGATION_FAILED. Publishes /yasmin_state,
-                # which quadruped_controller mirrors into quadruped_main_status, and hosts
-                # /cancel_goal.
+                # reports a fix, then forwards /lichtblick_navgoal to nav2 and sends the
+                # outcome to IDLE / CANCELED / NAVIGATION_FAILED. Runs a route segment by
+                # segment, relocalizing through /relocalize at map switches.
+                # Publishes /yasmin_state, which quadruped_controller mirrors into
+                # quadruped_main_status, and hosts /cancel_goal.
                 #
                 # Also order-independent: it blocks on /localization_status before touching
                 # nav2 at all, and bounds its wait_for_server per goal.
@@ -233,13 +234,15 @@ def generate_launch_description():
 
                 # Gatekeeper in front of tmms_yasmin for multi-waypoint plans, the same way
                 # localization_manager gates nav2's localization services. Validates the
-                # incoming plan against the live robot state, then forwards it to
-                # /execute_navplan. Order-independent: its client call is bounded.
+                # incoming plan against the live robot state and the maps on disk, cuts it
+                # into one segment per map, then forwards it to /execute_route.
+                # Order-independent: its client call is bounded.
                 Node(
                     package='navplan_processor',
                     executable='navplan_processor_node',
                     name='navplan_processor',
-                    output='screen'),
+                    output='screen',
+                    parameters=[{'maps_dir': maps_dir}]),
 
                 # Rosbag recording (cameras + quadruped status)
                 IncludeLaunchDescription(

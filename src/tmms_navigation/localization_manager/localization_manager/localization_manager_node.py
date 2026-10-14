@@ -44,6 +44,8 @@ from tmms_msgs.srv import RelocalizeTrigger, StringTrigger
 # ERROR is allowed deliberately. The robot is stopped there (the goal was cancelled on the
 # way in), and it is exactly when an operator needs to reload a map or re-seed a pose as part
 # of recovering -- excluding it deadlocks a fault that the automatic restart could not clear.
+#
+# MAP_SWITCHING is tmms_yasmin itself relocalizing between route segments, robot stopped.
 ALLOWED_STATES = frozenset({
     QuadrupedMainStatus.UNLOCALIZED,
     QuadrupedMainStatus.IDLE,
@@ -51,6 +53,7 @@ ALLOWED_STATES = frozenset({
     QuadrupedMainStatus.NAVIGATION_FAILED,
     QuadrupedMainStatus.PAUSED,
     QuadrupedMainStatus.ERROR,
+    QuadrupedMainStatus.MAP_SWITCHING,
 })
 
 # Same rule as ui_backend.js's MAP_NAME_RE. /map_load takes a bare name and builds the path

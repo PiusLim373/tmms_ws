@@ -1,0 +1,124 @@
+/* The tester's own animations, kept out of the shared index.css. */
+
+/* A button that needs doing: the robot has no fix. */
+@keyframes npt-danger-flash {
+  0%, 100% {
+    border-color: #F87171;
+    background: rgba(248, 113, 113, 0.22);
+    box-shadow: 0 0 0 1px #F87171;
+  }
+  50% {
+    border-color: var(--border);
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+.npt-danger-flash {
+  color: #F87171;
+  animation: npt-danger-flash 1s ease-in-out infinite;
+}
+
+/* Cards floating over the map: the robot card and the map picker. */
+.npt-card {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+
+:root.light .npt-card {
+  box-shadow: 0 6px 20px rgba(40, 20, 70, 0.18);
+}
+
+.npt-picker-btn,
+.npt-menu-item {
+  background: transparent;
+  color: var(--text-h);
+  transition: background 0.15s;
+}
+
+.npt-picker-btn:hover:not(:disabled),
+.npt-menu-item:hover,
+.npt-menu-item[aria-selected='true'] {
+  background: var(--panel-bg-alt);
+}
+
+.npt-picker-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* The sidebar strip: one button the full height of the page. */
+.npt-rail {
+  color: var(--text-h);
+  transition: background 0.15s;
+}
+
+.npt-rail:hover {
+  background: var(--panel-bg-alt);
+}
+
+.npt-rail-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.npt-rail:hover .npt-rail-chevron {
+  border-color: var(--accent-bright);
+  color: var(--text-h);
+}
+
+/* Slides. Durations match SLIDE_MS in NavplanTesterPage. */
+.npt-slide-width {
+  transition: width 0.22s ease;
+}
+
+.npt-turn {
+  transition: transform 0.22s ease;
+}
+
+/* Opens by growing its single grid row from 0fr to 1fr. */
+.npt-reveal {
+  display: grid;
+  transition: grid-template-rows 0.22s ease;
+}
+
+.npt-reveal-body {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+/* MarqueeText: slides an overflowing line to its end and back. --npt-shift is the overflow. */
+@keyframes npt-marquee {
+  0%, 15% { transform: translateX(0); }
+  85%, 100% { transform: translateX(var(--npt-shift)); }
+}
+
+.npt-marquee {
+  display: inline-block;
+  animation: npt-marquee var(--npt-duration) ease-in-out infinite alternate;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .npt-danger-flash {
+    animation: none;
+    border-color: #F87171;
+    background: rgba(248, 113, 113, 0.22);
+  }
+  .npt-marquee {
+    animation: none;
+  }
+  .npt-slide-width,
+  .npt-turn,
+  .npt-reveal,
+  .npt-reveal-body {
+    transition: none;
+  }
+}

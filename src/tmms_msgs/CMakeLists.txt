@@ -13,12 +13,16 @@ find_package(geometry_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/QuadrupedMainStatus.msg"
   "msg/NavigationPlan.msg"
+  "msg/Waypoint.msg"
+  "msg/Route.msg"
+  "msg/RouteSegment.msg"
   "srv/StringTrigger.srv"
   "srv/PoseTrigger.srv"
   "srv/FloatTrigger.srv"
   "srv/NavigationPlanTrigger.srv"
   "srv/RelocalizeTrigger.srv"
   "srv/POIPoseTrigger.srv"
+  "srv/RouteTrigger.srv"
   DEPENDENCIES geometry_msgs
 )
 

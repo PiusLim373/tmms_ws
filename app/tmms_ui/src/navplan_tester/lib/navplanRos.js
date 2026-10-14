@@ -46,31 +46,41 @@ export function relocalize({ mapName, x, y, yaw }, onResult, onError) {
 }
 
 /**
- * Hand a plan to navplan_processor, which validates it and forwards it to the state machine.
+ * Hand a plan to navplan_processor, which validates it, cuts it into one segment per map and
+ * forwards it to the state machine. `waypoints` are tmms_msgs/Waypoint, each on its own map.
  *
  * onResult fires on TRANSPORT success, so a validation rejection arrives there with
  * success:false and the reason in message — branch on it.
  */
-export function sendNavigationPlan({ navplanId, mapName, waypoints }, onResult, onError) {
+export function sendNavplan({ navplanId, waypoints }, onResult, onError) {
   callRosService(
     '/navigation_plan',
     'tmms_msgs/srv/NavigationPlanTrigger',
     {
       navigation_plan: {
         navplan_id: navplanId,
-        map_name: mapName,
         timestamp: new Date().toISOString(),
         status: 'created',
-        waypoints: waypoints.map(({ x, y, yaw }) => ({
-          position: { x, y, z: 0 },
-          orientation: yawToQuaternion(yaw ?? 0),
-        })),
+        waypoints,
       },
     },
     onResult,
     onError,
     NAVPLAN_TIMEOUT_SEC,
   )
+}
+
+// Single-map form, kept for the C2 page: every waypoint is a simple one on `mapName`.
+export function sendNavigationPlan({ navplanId, mapName, waypoints }, onResult, onError) {
+  sendNavplan({
+    navplanId,
+    waypoints: waypoints.map(({ x, y, yaw }, i) => ({
+      id: i + 1,
+      map_name: mapName,
+      type: 'simple',
+      pose: { position: { x, y, z: 0 }, orientation: yawToQuaternion(yaw ?? 0) },
+    })),
+  }, onResult, onError)
 }
 
 // Epoch ms: strictly increasing without any stored counter, and well inside both int64 and

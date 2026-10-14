@@ -1,0 +1,5 @@
+tmms_msgs/NavigationPlan navigation_plan
+tmms_msgs/Route route
+---
+bool success
+string message

@@ -21,6 +21,7 @@ string CANCELED=canceled
 string PAUSED=paused
 # Distinct from ERROR: a goal that could not be reached, not a broken system.
 string NAVIGATION_FAILED=navigation_failed
+string MAP_SWITCHING=map_switching
 
 # Enum robot_mode
 string ROBOT_IDLE=idle

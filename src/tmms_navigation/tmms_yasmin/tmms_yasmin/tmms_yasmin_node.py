@@ -7,7 +7,7 @@ answer to "what is the robot allowed to do right now".
 
                   localization_status == localized
    UNLOCALIZED ------------------------------------> IDLE
-        ^                                             |  /lichtblick_navgoal
+        ^                                             |  /lichtblick_navgoal or a route
         |                                             |  accepted by nav2
         |  localization_lost (cancels any goal)       v
         +----------------------------------------- NAVIGATING <--+ /lichtblick_navgoal
@@ -17,7 +17,10 @@ answer to "what is the robot allowed to do right now".
         |              canceled  --> CANCELED ---------------+    |
         +-- (all three accept a new goal and go back to NAVIGATING)
 
-   /system_error non-empty, from ANY of those four --> ERROR --(it goes empty)--> IDLE
+   NAVIGATING --segment ends map_switching--> MAP_SWITCHING --relocalized--> NAVIGATING
+   MAP_SWITCHING --failed--> NAVIGATION_FAILED if still localized, else UNLOCALIZED
+
+   /system_error non-empty, from ANY of those states --> ERROR --(it goes empty)--> IDLE
 
 ERROR is the sensor-fault path: error_monitoring raises it when a costmap's cloud buffer
 goes stale, which cancels any active goal and refuses new ones until the flag clears. Unlike
@@ -25,14 +28,22 @@ localization_lost it clears itself, so the normal case needs no operator action.
 is exempt -- ERROR exits to IDLE, which is only safe past the localization gate.
 
 Two ways in to NAVIGATING. A bare /lichtblick_navgoal is one pose and preempts whatever is
-running. A navplan arrives on /execute_navplan from navplan_processor, is a list of poses
-driven with goThroughPoses, and is REFUSED unless the FSM is already waiting -- so it never
-preempts. Its progress is reported on /curr_navplan as accepted / executing / completed /
-cancelled / errored. This node is the topic's only writer, and only for plans it admitted: a
-refused plan is answered on the service alone, so it can never overwrite a running plan in
+running. A route arrives on /execute_route from navplan_processor, already validated and cut
+into one segment per map, and is REFUSED unless the FSM is already waiting -- so it never
+preempts. Each segment is driven with goThroughPoses. One ending map_switching hands over to
+MAP_SWITCHING, which relocalizes onto the next segment's first waypoint through
+localization_manager's /relocalize and drives on from there. A failed switch ends the route;
+it never resumes on its own.
+
+Progress is reported on /curr_navplan as accepted / executing / completed / cancelled /
+errored, with the route and the segment under way on /curr_route and /curr_route_segment.
+This node is those topics' only writer, and only for plans it admitted: a refused plan is
+answered on the service alone, so it can never overwrite a running plan in
 quadruped_main_status's mirror.
 
-A goal arriving during NAVIGATING preempts the running one without leaving the state. One
+/cancel_goal is a Trigger so it can say no: refused during MAP_SWITCHING, where the
+relocalization cannot be interrupted, and "nothing to cancel" with nothing running. A goal
+arriving during NAVIGATING preempts the running one without leaving the state. One
 sequencing contract falls out of that: after /cancel_goal, the caller MUST wait for
 /yasmin_state to read CANCELED before publishing the next goal. A goal that lands while the
 cancel is still in flight is dropped -- NAVIGATING will not take it once cancelling has
@@ -40,7 +51,9 @@ started, and CANCELED clears it on entry.
 
 IDLE, CANCELED and NAVIGATION_FAILED are three instances of one state class differing only
 in the name they publish -- they are the same waiting behaviour, and keeping them separate is
-what makes the viewer diagram show how the robot got there.
+what makes the viewer diagram show how the robot got there. All three drop to UNLOCALIZED
+whenever localization_status is not localized, so a failed relocalize cannot leave the robot
+waiting for goals without a fix.
 
 THREADING. Two nodes are in play and they are spun completely differently:
 
@@ -53,10 +66,12 @@ THREADING. Two nodes are in play and they are spun completely differently:
 Hence the rule this file is built around: callbacks set flags, and every BasicNavigator call
 happens on the single FSM execution thread. Calling navigator.cancelTask() straight from the
 /cancel_goal callback is the obvious implementation and it is a race against the
-isTaskComplete() poll in NavigatingState.
+isTaskComplete() poll in NavigatingState. /relocalize is called from the FSM thread too, and
+YasminNode's executor completes its future.
 """
 
 import threading
+import time
 
 import rclpy
 import yasmin
@@ -64,9 +79,9 @@ from geometry_msgs.msg import PoseStamped
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from std_msgs.msg import String
-from std_srvs.srv import Empty
-from tmms_msgs.msg import NavigationPlan, QuadrupedMainStatus
-from tmms_msgs.srv import NavigationPlanTrigger
+from std_srvs.srv import Trigger
+from tmms_msgs.msg import NavigationPlan, QuadrupedMainStatus, Route, RouteSegment
+from tmms_msgs.srv import RelocalizeTrigger, RouteTrigger
 from yasmin import Blackboard, State, StateMachine
 from yasmin_ros import set_ros_loggers
 from yasmin_ros.yasmin_node import YasminNode
@@ -80,11 +95,21 @@ TICK_SEC = 0.2
 # `while not wait_for_server(timeout_sec=1.0)` forever, hanging the FSM with no way out.
 NAV_SERVER_WAIT_SEC = 3.0
 
+# One /relocalize call covers the map load, the best-effort cloud load and AMCL convergence.
+RELOCALIZE_TIMEOUT_SEC = 60.0
+
+# localization_manager gates on quadruped_main_status, a 200 ms mirror of /yasmin_state. A
+# /relocalize sent before the mirror catches up is refused as still navigating.
+MIRROR_WAIT_SEC = 2.0
+
+# /relocalize answers on the service and reports localized on a topic, in either order.
+LOCALIZED_WAIT_SEC = 2.0
+
 LATCHED = QoSProfile(depth=1,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      history=HistoryPolicy.KEEP_LAST)
 
-# States in which a navplan may be dispatched. Must agree with navplan_processor's own
+# States in which a route may be dispatched. Must agree with navplan_processor's own
 # ACCEPTING_STATES; this one is authoritative because it reads the FSM directly rather than
 # quadruped_controller's 200 ms mirror.
 NAVPLAN_ACCEPTING_STATES = frozenset({
@@ -97,7 +122,8 @@ NAVPLAN_ACCEPTING_STATES = frozenset({
 class NavContext:
     """Everything the states share: the ROS interfaces, the navigator, and the flags.
 
-    Only ever mutated from callbacks under _lock; only ever acted on from the FSM thread.
+    Flags are only ever mutated from callbacks under _lock and acted on from the FSM thread.
+    Route progress (route, segment) belongs to the FSM thread alone.
     """
 
     def __init__(self):
@@ -112,15 +138,20 @@ class NavContext:
         self._cancel_requested = False
         # Non-empty is the fault, and the string is the reason. Empty means healthy.
         self._system_error = ''
-        # Navplans get their own slot rather than sharing _pending_goal: a navgoal preempts a
-        # running goal, a navplan is refused unless the robot is already waiting, so the two
+        # Routes get their own slot rather than sharing _pending_goal: a navgoal preempts a
+        # running goal, a route is refused unless the robot is already waiting, so the two
         # are consumed in different places and must not overwrite each other.
-        self._pending_navplan = None
+        self._pending_route = None   # (NavigationPlan, Route)
         self._active_navplan = None
         # What publish_state last published. The FSM thread is the only writer.
         self._state = ''
+        # quadruped_main_status.navigation_state, the mirror localization_manager gates on.
+        self._mirrored_state = ''
         # Lets a blocked state wake immediately on a new goal instead of waiting out its tick.
         self._wake = threading.Event()
+
+        self.route = None
+        self.segment = 0
 
         self._state_pub = self.node.create_publisher(String, '/yasmin_state', LATCHED)
 
@@ -135,12 +166,18 @@ class NavContext:
         # starting after a fault was raised must not look like a healthy system.
         self.node.create_subscription(
             String, '/system_error', self._system_error_cb, LATCHED)
-        self.node.create_service(Empty, '/cancel_goal', self._cancel_goal_cb)
-        # navplan_processor forwards validated plans here. Volatile, matching
-        # quadruped_controller's subscription.
+        self.node.create_subscription(
+            QuadrupedMainStatus, '/quadruped_main_status', self._main_status_cb, 10)
+        self.node.create_service(Trigger, '/cancel_goal', self._cancel_goal_cb)
+        # Volatile, matching quadruped_controller's subscription.
         self._navplan_pub = self.node.create_publisher(NavigationPlan, '/curr_navplan', 10)
-        self.node.create_service(
-            NavigationPlanTrigger, '/execute_navplan', self._execute_navplan_cb)
+        # Latched so a viewer that connects mid-route still sees what is running.
+        self._route_pub = self.node.create_publisher(Route, '/curr_route', LATCHED)
+        self._segment_pub = self.node.create_publisher(
+            RouteSegment, '/curr_route_segment', LATCHED)
+        # navplan_processor forwards validated routes here.
+        self.node.create_service(RouteTrigger, '/execute_route', self._execute_route_cb)
+        self._relocalize_cli = self.node.create_client(RelocalizeTrigger, '/relocalize')
 
     # -- callbacks: flags only, never a navigator call -------------------------
 
@@ -160,32 +197,59 @@ class NavContext:
             self._system_error = msg.data
         self._wake.set()
 
-    def _cancel_goal_cb(self, request, response):
+    def _main_status_cb(self, msg):
         with self._lock:
-            self._cancel_requested = True
+            self._mirrored_state = msg.navigation_state
+
+    def _cancel_goal_cb(self, request, response):
+        dropped = None
+        with self._lock:
+            state = self._state
+            if state == QuadrupedMainStatus.MAP_SWITCHING:
+                reason = 'switching map; cancel once the next segment is under way'
+            elif state == QuadrupedMainStatus.NAVIGATING or self._active_navplan is not None:
+                # Also covers a route taken for dispatch whose NAVIGATING is not published yet.
+                reason = None
+                self._cancel_requested = True
+            elif self._pending_route is not None:
+                reason = None
+                dropped, self._pending_route = self._pending_route[0], None
+            else:
+                reason = 'nothing to cancel'
         self._wake.set()
-        yasmin.YASMIN_LOG_INFO('/cancel_goal requested')
+
+        if dropped is not None:
+            dropped.status = NavigationPlan.CANCELLED
+            self._navplan_pub.publish(dropped)
+
+        response.success = reason is None
+        if reason is None:
+            response.message = 'cancel requested'
+            yasmin.YASMIN_LOG_INFO('/cancel_goal requested')
+        else:
+            response.message = reason
+            yasmin.YASMIN_LOG_WARN(f'/cancel_goal refused: {reason}')
         return response
 
-    def _execute_navplan_cb(self, request, response):
+    def _execute_route_cb(self, request, response):
         """Admission control only -- stash and return; the FSM thread does the driving.
 
-        Rejecting rather than holding is deliberate. A plan parked until the state came good
+        Rejecting rather than holding is deliberate. A route parked until the state came good
         would fire on its own once localization returned, which is the behaviour
         clear_pending_goal() exists to prevent.
         """
-        plan = request.navigation_plan
+        plan, route = request.navigation_plan, request.route
         with self._lock:
             state = self._state
-            if not plan.waypoints:
-                reason = 'plan has no waypoints'
+            if not route.route_segments or not route.route_segments[0].waypoints:
+                reason = 'route has no waypoints'
             elif state not in NAVPLAN_ACCEPTING_STATES:
                 reason = f"robot is '{state}'; cancel the current goal first"
-            elif self._pending_navplan is not None:
+            elif self._pending_route is not None:
                 # The slot holds one. Dispatch normally empties it within a tick, but it
                 # blocks for NAV_SERVER_WAIT_SEC when nav2 is down -- long enough for a
                 # second plan to land and silently replace the first.
-                reason = (f'navplan {self._pending_navplan.navplan_id} is still waiting to '
+                reason = (f'navplan {self._pending_route[0].navplan_id} is still waiting to '
                           f'be dispatched')
             elif self._active_navplan is not None:
                 # Taken from the slot but the FSM has not published `navigating` yet, so the
@@ -197,7 +261,7 @@ class NavContext:
                 # publish `executing` ahead of this.
                 plan.status = NavigationPlan.ACCEPTED
                 self._navplan_pub.publish(plan)
-                self._pending_navplan = plan
+                self._pending_route = (plan, route)
         self._wake.set()
 
         response.success = reason is None
@@ -212,7 +276,7 @@ class NavContext:
     # -- FSM-thread helpers ----------------------------------------------------
 
     def publish_state(self, name):
-        # Cached so /execute_navplan can gate on it. Single writer, this thread.
+        # Cached so /execute_route and /cancel_goal can gate on it. Single writer, this thread.
         with self._lock:
             self._state = name
         self._state_pub.publish(String(data=name))
@@ -245,24 +309,25 @@ class NavContext:
     def clear_pending_goal(self):
         with self._lock:
             self._pending_goal = None
-            plan, self._pending_navplan = self._pending_navplan, None
-        if plan is not None:
+            pending, self._pending_route = self._pending_route, None
+        if pending is not None:
             # Already published as accepted; dropping it silently would leave that standing.
+            plan = pending[0]
             plan.status = NavigationPlan.ERRORED
             self._navplan_pub.publish(plan)
             yasmin.YASMIN_LOG_WARN(f'navplan {plan.navplan_id} dropped before dispatch -> errored')
 
-    def take_navplan(self):
-        """Pop the pending navplan, if any, and mark it active. Take-once, same as take_goal().
+    def take_route(self):
+        """Pop the pending (plan, route), if any, and mark the plan active. Take-once.
 
-        Active from here rather than from dispatch, so /execute_navplan refuses a second plan
+        Active from here rather than from dispatch, so /execute_route refuses a second plan
         while this one is still being handed to nav2.
         """
         with self._lock:
-            plan, self._pending_navplan = self._pending_navplan, None
-            if plan is not None:
-                self._active_navplan = plan
-            return plan
+            pending, self._pending_route = self._pending_route, None
+            if pending is not None:
+                self._active_navplan = pending[0]
+            return pending
 
     def publish_navplan_status(self, status):
         """Republish the active plan under a new status. No-op when none is active."""
@@ -276,9 +341,103 @@ class NavContext:
         self._navplan_pub.publish(plan)
         yasmin.YASMIN_LOG_INFO(f'navplan {plan.navplan_id} -> {status}')
 
-    def has_active_navplan(self):
-        with self._lock:
-            return self._active_navplan is not None
+    def start_route(self, route):
+        self.route = route
+        self.segment = 0
+        self._route_pub.publish(route)
+
+    def end_route(self, status):
+        """Report the plan's final status and forget the route. No-op without a route."""
+        self.publish_navplan_status(status)
+        self.route = None
+        self.segment = 0
+
+    def route_continues(self):
+        """True when the segment just finished hands over to a map switch."""
+        return (self.route is not None
+                and self.route.route_segments[self.segment].end_action
+                == RouteSegment.MAP_SWITCHING
+                and self.segment + 1 < len(self.route.route_segments))
+
+    def dispatch_segment(self, index):
+        """Send route segment `index` to nav2: 'ok', 'empty', 'unavailable' or 'rejected'.
+
+        Always goThroughPoses, even for one waypoint, so there is a single path to reason
+        about. Waypoint poses carry no frame of their own and the whole system works in map.
+        """
+        segment = self.route.route_segments[index]
+        self.segment = index
+        self._segment_pub.publish(segment)
+        # After a switch the robot stands on waypoints[0]; it was the relocalize pose.
+        waypoints = segment.waypoints[1:] if index > 0 else segment.waypoints
+        if not waypoints:
+            return 'empty'
+
+        if not self.nav_server_ready(self.navigator.nav_through_poses_client):
+            yasmin.YASMIN_LOG_ERROR('NavigateThroughPoses action server unavailable')
+            return 'unavailable'
+
+        stamp = self.node.get_clock().now().to_msg()
+        poses = []
+        for wp in waypoints:
+            ps = PoseStamped()
+            ps.header.frame_id = 'map'
+            ps.header.stamp = stamp
+            ps.pose = wp.pose
+            poses.append(ps)
+
+        # Same trap as goToPose: goal_handle is overwritten before `accepted` is checked, so
+        # a rejection must put the old one back or a later cancel stops the wrong handle.
+        prev_handle = self.navigator.goal_handle
+        if not self.navigator.goThroughPoses(poses):
+            self.navigator.goal_handle = prev_handle
+            yasmin.YASMIN_LOG_WARN(f'nav2 rejected route segment {index}')
+            return 'rejected'
+        yasmin.YASMIN_LOG_INFO(
+            f"route segment {index} on '{segment.waypoints[0].map_name}': "
+            f'{len(poses)} waypoints')
+        return 'ok'
+
+    def relocalize(self, map_name, pose):
+        """Load map_name and seed pose on it through localization_manager. (ok, message)."""
+        if not self._relocalize_cli.wait_for_service(timeout_sec=NAV_SERVER_WAIT_SEC):
+            return False, '/relocalize is not available'
+
+        request = RelocalizeTrigger.Request()
+        request.map_name = map_name
+        request.initial_pose.header.frame_id = 'map'
+        request.initial_pose.header.stamp = self.node.get_clock().now().to_msg()
+        # Zero covariance: localization_manager substitutes its default particle spread.
+        request.initial_pose.pose.pose = pose
+
+        future = self._relocalize_cli.call_async(request)
+        done = threading.Event()
+        future.add_done_callback(lambda _f: done.set())
+        deadline = time.monotonic() + RELOCALIZE_TIMEOUT_SEC
+        while not done.wait(TICK_SEC):
+            if not rclpy.ok() or time.monotonic() > deadline:
+                future.cancel()
+                return False, (f'/relocalize did not return within '
+                               f'{RELOCALIZE_TIMEOUT_SEC:.0f}s')
+
+        result = future.result()
+        if result is None:
+            return False, '/relocalize call failed'
+        return result.success, result.message
+
+    def wait_not_navigating(self):
+        """Wait, bounded, for the mirror to move off `navigating` (`paused` counts)."""
+        deadline = time.monotonic() + MIRROR_WAIT_SEC
+        while rclpy.ok() and time.monotonic() < deadline:
+            with self._lock:
+                if self._mirrored_state != QuadrupedMainStatus.NAVIGATING:
+                    return
+            time.sleep(0.05)
+
+    def wait_localized(self):
+        deadline = time.monotonic() + LOCALIZED_WAIT_SEC
+        while rclpy.ok() and time.monotonic() < deadline and not self.is_localized():
+            time.sleep(0.05)
 
     def cancel_requested(self):
         with self._lock:
@@ -288,9 +447,8 @@ class NavContext:
         with self._lock:
             self._cancel_requested = False
 
-    def nav_server_ready(self):
-        return self.navigator.nav_to_pose_client.wait_for_server(
-            timeout_sec=NAV_SERVER_WAIT_SEC)
+    def nav_server_ready(self, client):
+        return client.wait_for_server(timeout_sec=NAV_SERVER_WAIT_SEC)
 
 
 class UnlocalizedState(State):
@@ -304,7 +462,7 @@ class UnlocalizedState(State):
             'again whenever localization is lost.')
 
     def execute(self, blackboard: Blackboard) -> str:
-        # A navplan admitted just before localization was lost will never run; report it now
+        # A route admitted just before localization was lost will never run; report it now
         # rather than on the next IDLE entry.
         self.ctx.clear_pending_goal()
         self.ctx.publish_state(QuadrupedMainStatus.UNLOCALIZED)
@@ -327,22 +485,26 @@ class WaitForGoalState(State):
         self.ctx = ctx
         self.state_name = state_name
         self.set_description(
-            f'Publishes "{state_name}" and waits for /lichtblick_navgoal. Forwards an '
-            'accepted goal to nav2; falls back to UNLOCALIZED if localization is lost, or '
-            'to ERROR on /system_error.')
+            f'Publishes "{state_name}" and waits for /lichtblick_navgoal or a route. Forwards '
+            'it to nav2; falls back to UNLOCALIZED when not localized, or to ERROR on '
+            '/system_error.')
 
     def execute(self, blackboard: Blackboard) -> str:
         # NAVIGATING now consumes goals itself, so what is left here arrived during
         # cancellation or while UNLOCALIZED. Both are stale; dropping them is what keeps
         # the robot from silently starting a second navigation on entry.
-        # Cleared BEFORE the state is published: every state entering here refuses navplans,
+        # Cleared BEFORE the state is published: every state entering here refuses routes,
         # so none can be admitted until then, and none admitted after it gets wiped here.
         self.ctx.clear_pending_goal()
+        # A cancel that raced the previous goal's finish must not cancel the next one.
+        self.ctx.clear_cancel()
         self.ctx.publish_state(self.state_name)
 
         while rclpy.ok() and not self.is_canceled():
-            if self.ctx.localization_lost():
-                yasmin.YASMIN_LOG_WARN('Localization lost while waiting for a goal')
+            # Any status but localized, not just localization_lost: a failed relocalize
+            # reports `failed`, and goals must not be taken without a fix.
+            if not self.ctx.is_localized():
+                yasmin.YASMIN_LOG_WARN('Not localized while waiting for a goal')
                 return 'localization_lost'
 
             # Checked here too, not just in NAVIGATING: a sensor feed that has died must
@@ -352,10 +514,10 @@ class WaitForGoalState(State):
                 yasmin.YASMIN_LOG_ERROR(f'System error while waiting for a goal: {reason}')
                 return 'system_error'
 
-            # Navplans are only ever dispatched from here -- /execute_navplan refuses one
-            # unless the FSM is already in a waiting state, so NAVIGATING never sees one.
-            plan = self.ctx.take_navplan()
-            if plan is not None and self._dispatch_navplan(plan):
+            # Routes are only ever started from here -- /execute_route refuses one unless
+            # the FSM is already in a waiting state, so NAVIGATING never sees one arrive.
+            pending = self.ctx.take_route()
+            if pending is not None and self._start_route(pending[1]):
                 return 'goal_accepted'
 
             goal = self.ctx.take_goal()
@@ -363,7 +525,7 @@ class WaitForGoalState(State):
                 self.ctx.wait_tick()
                 continue
 
-            if not self.ctx.nav_server_ready():
+            if not self.ctx.nav_server_ready(self.ctx.navigator.nav_to_pose_client):
                 # Staying put rather than hanging: goToPose() would block forever here.
                 yasmin.YASMIN_LOG_ERROR(
                     'NavigateToPose action server unavailable -- is nav2 running? '
@@ -378,39 +540,20 @@ class WaitForGoalState(State):
 
         return 'localization_lost'
 
-    def _dispatch_navplan(self, plan):
-        """Send a validated navplan to nav2. Returns True if it was accepted.
-
-        Always goThroughPoses, even for one waypoint, so there is a single path to reason
-        about. The waypoints carry no frame of their own -- NavigationPlan.msg is a bare
-        Pose[] -- and the whole system works in map.
-        """
-        if not self.ctx.nav_server_ready():
-            yasmin.YASMIN_LOG_ERROR(
-                'NavigateThroughPoses action server unavailable; dropping navplan')
-            self.ctx.publish_navplan_status(NavigationPlan.ERRORED)
-            return False
-
-        stamp = self.ctx.node.get_clock().now().to_msg()
-        poses = []
-        for wp in plan.waypoints:
-            ps = PoseStamped()
-            ps.header.frame_id = 'map'
-            ps.header.stamp = stamp
-            ps.pose = wp
-            poses.append(ps)
-
-        # Same trap as goToPose: goal_handle is overwritten before `accepted` is checked, so
-        # a rejection must put the old one back or a later cancel stops the wrong handle.
-        prev_handle = self.ctx.navigator.goal_handle
-        if not self.ctx.navigator.goThroughPoses(poses):
-            self.ctx.navigator.goal_handle = prev_handle
-            yasmin.YASMIN_LOG_WARN('nav2 rejected the navplan; still waiting')
-            self.ctx.publish_navplan_status(NavigationPlan.REJECTED)
-            return False
-
-        self.ctx.publish_navplan_status(NavigationPlan.EXECUTING)
-        return True
+    def _start_route(self, route):
+        """Dispatch the route's first segment. Returns True if nav2 accepted it."""
+        self.ctx.start_route(route)
+        result = self.ctx.dispatch_segment(0)
+        if result == 'ok':
+            self.ctx.publish_navplan_status(NavigationPlan.EXECUTING)
+            return True
+        if result == 'rejected':
+            yasmin.YASMIN_LOG_WARN('nav2 rejected the route; still waiting')
+            self.ctx.end_route(NavigationPlan.REJECTED)
+        else:
+            yasmin.YASMIN_LOG_ERROR('Route not dispatched; dropping it')
+            self.ctx.end_route(NavigationPlan.ERRORED)
+        return False
 
 
 class SystemErrorState(State):
@@ -444,20 +587,20 @@ class SystemErrorState(State):
 
 
 class NavigatingState(State):
-    """Drives one nav2 goal to completion, or cancels it."""
+    """Drives one nav2 goal or route segment to completion, or cancels it."""
 
     def __init__(self, ctx):
         super().__init__(
-            ['succeeded', 'aborted', 'canceled', 'localization_lost', 'system_error'])
+            ['succeeded', 'map_switch', 'aborted', 'canceled', 'localization_lost',
+             'system_error'])
         self.ctx = ctx
         self.set_description(
             'Polls the active nav2 goal. Swaps in a new /lichtblick_navgoal by preemption. '
             'Cancels on /cancel_goal, lost localization or /system_error, and reports the '
-            'reason.')
+            'reason. A route segment ending map_switching hands over to MAP_SWITCHING.')
 
     def execute(self, blackboard: Blackboard) -> str:
         self.ctx.publish_state(QuadrupedMainStatus.NAVIGATING)
-        self.ctx.clear_cancel()
 
         # Why we cancelled decides the outcome: a cancel caused by lost localization must
         # land in UNLOCALIZED, not CANCELED, even though nav2 reports both as CANCELED.
@@ -488,10 +631,11 @@ class NavigatingState(State):
             if cancel_reason is None:
                 new_goal = self.ctx.take_goal()
                 if new_goal is not None:
-                    if not self.ctx.nav_server_ready():
+                    if not self.ctx.nav_server_ready(self.ctx.navigator.nav_to_pose_client):
                         # goToPose() would block forever waiting for the server.
                         yasmin.YASMIN_LOG_ERROR(
                             'NavigateToPose action server unavailable; abandoning goal')
+                        self.ctx.end_route(NavigationPlan.ERRORED)
                         return 'aborted'
                     # goToPose() overwrites goal_handle before checking `accepted`, so a
                     # rejection must restore it or cancelTask() stops the rejected handle
@@ -499,9 +643,10 @@ class NavigatingState(State):
                     prev_handle = self.ctx.navigator.goal_handle
                     if self.ctx.navigator.goToPose(new_goal):
                         yasmin.YASMIN_LOG_INFO('New goal preempted the active one')
-                        # A bare navgoal that preempts a navplan abandons it. Report that
-                        # now, or the plan would sit at "executing" forever.
-                        self.ctx.publish_navplan_status(NavigationPlan.CANCELLED)
+                        # A bare navgoal that preempts a route abandons it. Report that now,
+                        # or the plan would sit at "executing" forever, and forget the route
+                        # so the navgoal's success cannot resume it.
+                        self.ctx.end_route(NavigationPlan.CANCELLED)
                     else:
                         self.ctx.navigator.goal_handle = prev_handle
                         yasmin.YASMIN_LOG_WARN(
@@ -517,27 +662,85 @@ class NavigatingState(State):
 
         if cancel_reason == 'localization_lost':
             yasmin.YASMIN_LOG_WARN('Localization lost mid-goal; goal cancelled')
-            self.ctx.publish_navplan_status(NavigationPlan.ERRORED)
+            self.ctx.end_route(NavigationPlan.ERRORED)
             return 'localization_lost'
         if cancel_reason == 'system_error':
             yasmin.YASMIN_LOG_ERROR(f'System error mid-goal; goal cancelled: {error_text}')
-            self.ctx.publish_navplan_status(NavigationPlan.ERRORED)
+            self.ctx.end_route(NavigationPlan.ERRORED)
             return 'system_error'
         if cancel_reason == 'goal_rejected':
-            self.ctx.publish_navplan_status(NavigationPlan.ERRORED)
+            self.ctx.end_route(NavigationPlan.ERRORED)
             return 'aborted'
         if result == TaskResult.SUCCEEDED:
+            if self.ctx.route_continues():
+                yasmin.YASMIN_LOG_INFO(f'Route segment {self.ctx.segment} reached')
+                return 'map_switch'
             yasmin.YASMIN_LOG_INFO('Goal reached')
-            self.ctx.publish_navplan_status(NavigationPlan.COMPLETED)
+            self.ctx.end_route(NavigationPlan.COMPLETED)
             return 'succeeded'
         if result == TaskResult.CANCELED:
             yasmin.YASMIN_LOG_INFO('Goal canceled')
-            self.ctx.publish_navplan_status(NavigationPlan.CANCELLED)
+            self.ctx.end_route(NavigationPlan.CANCELLED)
             return 'canceled'
         # FAILED and UNKNOWN both mean "did not get there and was not cancelled".
         yasmin.YASMIN_LOG_WARN(f'Goal did not complete: {result}')
-        self.ctx.publish_navplan_status(NavigationPlan.ERRORED)
+        self.ctx.end_route(NavigationPlan.ERRORED)
         return 'aborted'
+
+
+class MapSwitchingState(State):
+    """Relocalizes onto the next route segment's map, then drives that segment."""
+
+    def __init__(self, ctx):
+        super().__init__(
+            ['switched', 'completed', 'canceled', 'failed', 'localization_lost',
+             'system_error'])
+        self.ctx = ctx
+        self.set_description(
+            'Stopped at a map-switch waypoint: /relocalize onto the next map, then dispatch '
+            'the next segment. A failure ends the route. /cancel_goal is refused here.')
+
+    def execute(self, blackboard: Blackboard) -> str:
+        # A cancel accepted while the segment was finishing still ends the route here.
+        if self.ctx.cancel_requested():
+            yasmin.YASMIN_LOG_INFO('Route cancelled at a map switch')
+            self.ctx.end_route(NavigationPlan.CANCELLED)
+            return 'canceled'
+
+        self.ctx.publish_state(QuadrupedMainStatus.MAP_SWITCHING)
+        # Navgoals are not taken here; one left pending would preempt the next segment.
+        self.ctx.clear_pending_goal()
+
+        target = self.ctx.route.route_segments[self.ctx.segment + 1].waypoints[0]
+        self.ctx.wait_not_navigating()
+        yasmin.YASMIN_LOG_INFO(f"Switching to map '{target.map_name}'")
+        ok, message = self.ctx.relocalize(target.map_name, target.pose)
+
+        reason = self.ctx.system_error()
+        if reason:
+            yasmin.YASMIN_LOG_ERROR(f'System error during the map switch: {reason}')
+            self.ctx.end_route(NavigationPlan.ERRORED)
+            return 'system_error'
+        if not ok:
+            yasmin.YASMIN_LOG_ERROR(f'Map switch failed: {message}')
+            self.ctx.end_route(NavigationPlan.ERRORED)
+            # A refused or failed map load changes nothing; a failed convergence leaves the
+            # new map loaded without a fix.
+            return 'failed' if self.ctx.is_localized() else 'localization_lost'
+
+        yasmin.YASMIN_LOG_INFO(message)
+        self.ctx.wait_localized()
+        self.ctx.clear_pending_goal()
+        result = self.ctx.dispatch_segment(self.ctx.segment + 1)
+        if result == 'ok':
+            return 'switched'
+        if result == 'empty':
+            # The route ended on the map-switch waypoint itself.
+            yasmin.YASMIN_LOG_INFO('Route completed on the new map')
+            self.ctx.end_route(NavigationPlan.COMPLETED)
+            return 'completed'
+        self.ctx.end_route(NavigationPlan.ERRORED)
+        return 'failed'
 
 
 def main():
@@ -547,8 +750,8 @@ def main():
     ctx = NavContext()
 
     sm = StateMachine(outcomes=['shutdown'], handle_sigint=True)
-    sm.set_description('TMMS navigation state machine: localization gate, goal dispatch, '
-                       'and nav2 outcome routing.')
+    sm.set_description('TMMS navigation state machine: localization gate, goal and route '
+                       'dispatch, map switching, and nav2 outcome routing.')
 
     idle_transitions = {
         'goal_accepted': 'NAVIGATING',
@@ -575,8 +778,18 @@ def main():
     sm.add_state('NAVIGATING', NavigatingState(ctx),
                  transitions={
                      'succeeded': 'IDLE',
+                     'map_switch': 'MAP_SWITCHING',
                      'aborted': 'NAVIGATION_FAILED',
                      'canceled': 'CANCELED',
+                     'localization_lost': 'UNLOCALIZED',
+                     'system_error': 'ERROR',
+                 })
+    sm.add_state('MAP_SWITCHING', MapSwitchingState(ctx),
+                 transitions={
+                     'switched': 'NAVIGATING',
+                     'completed': 'IDLE',
+                     'canceled': 'CANCELED',
+                     'failed': 'NAVIGATION_FAILED',
                      'localization_lost': 'UNLOCALIZED',
                      'system_error': 'ERROR',
                  })

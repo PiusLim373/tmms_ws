@@ -1,8 +1,7 @@
 int64 navplan_id
-string map_name
 string timestamp
 string status
-geometry_msgs/Pose[] waypoints
+tmms_msgs/Waypoint[] waypoints
 
 
 # Enum status
