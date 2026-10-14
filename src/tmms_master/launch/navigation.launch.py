@@ -26,6 +26,8 @@ block on an action goal that never arrives. Trim them here once the robot is nav
 Velocity chain, which the cmd_vel_nav remaps below create:
     controller/behavior -> cmd_vel_nav -> velocity_smoother -> cmd_vel_smoothed
                         -> collision_monitor -> cmd_vel
+assisted_teleop is the exception: its cmd_vel_teleop_out parameter sends it to
+/quadruped_cmd_vel_teleop instead (see config/nav2_params.yaml).
 """
 
 import os

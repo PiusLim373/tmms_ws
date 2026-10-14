@@ -6,7 +6,8 @@ const PREVENT_DEFAULT = new Set([
 ])
 
 // This hook is not a general keyboard reader — QuadrupedWidget turns its output straight into
-// /quadruped_cmd_vel_ui, so anything that reaches heldKeys DRIVES THE ROBOT. Two guards keep
+// /safety_quadruped_cmd_vel_ui (or /quadruped_cmd_vel_ui with safety disabled), so anything
+// that reaches heldKeys DRIVES THE ROBOT. Two guards keep
 // that from firing when the operator is talking to the UI rather than the robot.
 
 // 1. Typing. Without this, naming a map "warehouse" walks the robot: W, A and S are all

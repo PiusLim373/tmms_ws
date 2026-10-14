@@ -6,6 +6,8 @@
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
+#include "nav2_msgs/action/assisted_teleop.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
@@ -37,7 +39,10 @@ public:
 private:
   void joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg);
   void cmdVelUiCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
+  void cmdVelTeleopCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void cmdVelNavCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
+  // Keeps an assisted_teleop goal running exactly while paused.
+  void assistedTeleopTimerCallback();
   void yasminStateCallback(const std_msgs::msg::String::SharedPtr msg);
   void localizationStatusCallback(const std_msgs::msg::String::SharedPtr msg);
   void currentMapCallback(const std_msgs::msg::String::SharedPtr msg);
@@ -89,9 +94,12 @@ private:
   int prev_standmove_btn_{0};
   geometry_msgs::msg::Twist joy_twist_;
   geometry_msgs::msg::Twist ui_twist_;
+  // The UI's safety teleop, after nav2's assisted_teleop has checked it against the costmap.
+  geometry_msgs::msg::Twist teleop_twist_;
   geometry_msgs::msg::Twist nav_twist_;
   rclcpp::Time last_joy_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_ui_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_teleop_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_nav_time_{0, 0, RCL_ROS_TIME};
   // Starts paused: the nav stack is not wired up yet, so the robot has to be
   // teleoperable the moment it boots.
@@ -113,6 +121,7 @@ private:
   ControlMode control_mode_{ControlMode::kMove};
   bool input_was_fresh_{false};
   bool prev_joy_zero_{true};
+  bool prev_teleop_zero_{true};
   std::string last_cmd_;
   float pose_roll_{0.0f};
   float pose_pitch_{0.0f};
@@ -128,6 +137,7 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr quadruped_cmd_vel_ui_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr quadruped_cmd_vel_teleop_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_nav_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr yasmin_state_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr localization_status_sub_;
@@ -153,6 +163,18 @@ private:
   rclcpp::Publisher<rosgraph_msgs::msg::Clock>::SharedPtr clock_pub_;
   rclcpp::TimerBase::SharedPtr clock_timer_;
   rclcpp::Clock system_clock_{RCL_SYSTEM_TIME};
+
+  // assisted_teleop goal. Only touched from default-group callbacks, which never overlap.
+  using AssistedTeleop = nav2_msgs::action::AssistedTeleop;
+  enum class TeleopGoal { kNone, kPending, kActive, kCanceling };
+  rclcpp_action::Client<AssistedTeleop>::SharedPtr assisted_teleop_client_;
+  rclcpp_action::ClientGoalHandle<AssistedTeleop>::SharedPtr assisted_teleop_goal_;
+  TeleopGoal assisted_teleop_state_{TeleopGoal::kNone};
+  // Bumped per goal, so replies to an abandoned goal are recognised and dropped.
+  uint64_t assisted_teleop_seq_{0};
+  // Last sign of life from the server: send, response or feedback.
+  rclcpp::Time assisted_teleop_seen_{0, 0, RCL_ROS_TIME};
+  rclcpp::TimerBase::SharedPtr assisted_teleop_timer_;
 
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   // odom -> base_footprint throttle, on /dog_odom's own stamps. 0 = send every message.

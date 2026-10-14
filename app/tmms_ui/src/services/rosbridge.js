@@ -35,8 +35,11 @@ function getPublisher(name, messageType) {
   return _publishers[name]
 }
 
-export function publishQuadrupedCmdVel(lx, ly, az) {
-  getPublisher('/quadruped_cmd_vel_ui', 'geometry_msgs/Twist').publish({
+// safe: through nav2's assisted_teleop, which stops the robot short of anything in the local
+// costmap. Unsafe goes straight to quadruped_controller, unchecked.
+export function publishQuadrupedCmdVel(lx, ly, az, safe) {
+  const topic = safe ? '/safety_quadruped_cmd_vel_ui' : '/quadruped_cmd_vel_ui'
+  getPublisher(topic, 'geometry_msgs/Twist').publish({
     linear:  { x: lx, y: ly, z: 0 },
     angular: { x: 0,  y: 0,  z: az },
   })

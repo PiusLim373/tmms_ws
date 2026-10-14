@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { publishQuadrupedCmdVel, callService } from '../../services/rosbridge'
+import { publishQuadrupedCmdVel, callService, subscribe } from '../../services/rosbridge'
 import { useTopicActivity } from '../../hooks/useTopicActivity'
 import { useGamepad } from '../../hooks/useGamepad'
 import { GearShift } from '../ui/GearShift'
@@ -104,25 +104,79 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
   const isWalkModeRef = useRef(isWalkMode)
   useEffect(() => { isWalkModeRef.current = isWalkMode }, [isWalkMode])
 
-  // Tracks the last cmd_vel the UI actually published, so we can tell whether a
-  // zero needs to be sent when walk mode is lost (backend replays the last value
-  // it received indefinitely — it doesn't expire it on its own).
-  const lastCmdRef = useRef({ lx: 0, ly: 0, az: 0 })
+  // Safety teleop: unless the operator disables it, commands go through nav2's assisted_teleop,
+  // which stops the robot when the next second of motion would hit the local costmap.
+  // Always starts safe: a remount (reload, page switch) or an unpause turns it back on.
+  const [safetyOff, setSafetyOff] = useState(false)
+  const safetyOffRef = useRef(false)
+
+  // Set while a held command must be dropped until every input is released: 'obstacle' after
+  // /teleop_obstacle, 'toggle' after the safety mode changed mid-hold.
+  const holdRef = useRef(null)
+  const [obstacleHold, setObstacleHold] = useState(false)
+
+  // Tracks the last cmd_vel the UI actually published, and on which topic, so we can tell
+  // whether a zero needs to be sent when walk mode is lost or a hold starts.
+  const lastCmdRef = useRef({ lx: 0, ly: 0, az: 0, safe: true })
   const sendCmdVel = useCallback((lx, ly, az) => {
-    publishQuadrupedCmdVel(lx, ly, az)
-    lastCmdRef.current = { lx, ly, az }
+    const safe = !safetyOffRef.current
+    publishQuadrupedCmdVel(lx, ly, az, safe)
+    lastCmdRef.current = { lx, ly, az, safe }
   }, [])
+
+  // Zero on the topic that last carried motion, so a mode switch can't strand it there.
+  const stopLast = useCallback(() => {
+    const { lx, ly, az, safe } = lastCmdRef.current
+    if (lx === 0 && ly === 0 && az === 0) return
+    publishQuadrupedCmdVel(0, 0, 0, safe)
+    lastCmdRef.current = { lx: 0, ly: 0, az: 0, safe }
+  }, [])
+
+  const hold = useCallback((reason) => {
+    stopLast()
+    holdRef.current = reason
+    setObstacleHold(reason === 'obstacle')
+  }, [stopLast])
+
+  // True while held, so the caller sends nothing; letting go of every input ends the hold.
+  const heldBack = useCallback((lx, ly, az) => {
+    if (!holdRef.current) return false
+    if (lx === 0 && ly === 0 && az === 0) {
+      holdRef.current = null
+      setObstacleHold(false)
+    }
+    return true
+  }, [])
+
+  // A command held across the switch must not carry into the other mode: fresh press needed.
+  const setSafety = useCallback((off) => {
+    if (off === safetyOffRef.current) return
+    if (isMovingRef.current) hold('toggle')
+    safetyOffRef.current = off
+    setSafetyOff(off)
+  }, [hold])
+
+  // assisted_teleop flags a predicted collision; it has already zeroed its own output.
+  useEffect(() => subscribe('/teleop_obstacle', 'std_msgs/Bool', (msg) => {
+    if (msg.data && !safetyOffRef.current && isMovingRef.current && !holdRef.current) hold('obstacle')
+  }), [hold])
+
+  // Every teleop session starts safe: handing the robot to nav2 re-enables safety.
+  const wasPausedRef = useRef(undefined)
+  useEffect(() => {
+    if (!statusActive) return
+    const paused = statusMsg?.is_paused
+    if (wasPausedRef.current === true && paused === false) setSafety(false)
+    wasPausedRef.current = paused
+  }, [statusActive, statusMsg, setSafety])
 
   // Safety net: the instant walk mode is lost (known non-walk mode, or unrecognized/undefined),
   // stop any residual motion instead of leaving the last nonzero command in effect.
   const wasWalkModeRef = useRef(isWalkMode)
   useEffect(() => {
-    if (wasWalkModeRef.current && !isWalkMode) {
-      const { lx, ly, az } = lastCmdRef.current
-      if (lx !== 0 || ly !== 0 || az !== 0) sendCmdVel(0, 0, 0)
-    }
+    if (wasWalkModeRef.current && !isWalkMode) stopLast()
     wasWalkModeRef.current = isWalkMode
-  }, [isWalkMode, sendCmdVel])
+  }, [isWalkMode, stopLast])
 
   // Lock speed to HIGH when gamepad takes over
   useEffect(() => {
@@ -158,15 +212,16 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
     const wasMoving = isMovingRef.current
     desiredCmdRef.current = { lx, ly, az }
     isMovingRef.current = isMoving
+    const held = heldBack(lx, ly, az)
 
-    if (isWalkMode) {
+    if (isWalkMode && !held) {
       if (isMoving || wasMoving) {
         sendCmdVel(lx, ly, az)
       }
     }
 
     setJoyDisplay(isWalkMode ? { x: lx, y: ly, yaw: az } : { x: 0, y: 0, yaw: 0 })
-  }, [heldKeys, isWalkMode, speedLevel, joyActive, linearSpeed, rotSpeed, sendCmdVel])
+  }, [heldKeys, isWalkMode, speedLevel, joyActive, linearSpeed, rotSpeed, sendCmdVel, heldBack])
 
   // Repeat-publish at 4Hz while a key is held or the joystick is pinned at a nonzero
   // deflection — otherwise the backend has no way to tell the UI is still connected
@@ -174,6 +229,7 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
   useEffect(() => {
     const id = setInterval(() => {
       if (joyActiveRef.current || !isWalkModeRef.current || !isMovingRef.current) return
+      if (holdRef.current) return
       const { lx, ly, az } = desiredCmdRef.current
       sendCmdVel(lx, ly, az)
     }, 250)
@@ -195,17 +251,17 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
     desiredCmdRef.current = { ...desiredCmdRef.current, lx: x, ly: y }
     const { lx, ly, az } = desiredCmdRef.current
     isMovingRef.current = lx !== 0 || ly !== 0 || az !== 0
-    if (isWalkModeRef.current) sendCmdVel(lx, ly, az)
+    if (!heldBack(lx, ly, az) && isWalkModeRef.current) sendCmdVel(lx, ly, az)
     setJoyDisplay(prev => ({ ...prev, x, y }))
-  }, [sendCmdVel])
+  }, [sendCmdVel, heldBack])
 
   const handleYawDrag = useCallback((v) => {
     desiredCmdRef.current = { ...desiredCmdRef.current, az: v }
     const { lx, ly, az } = desiredCmdRef.current
     isMovingRef.current = lx !== 0 || ly !== 0 || az !== 0
-    if (isWalkModeRef.current) sendCmdVel(lx, ly, az)
+    if (!heldBack(lx, ly, az) && isWalkModeRef.current) sendCmdVel(lx, ly, az)
     setJoyDisplay(prev => ({ ...prev, yaw: v }))
-  }, [sendCmdVel])
+  }, [sendCmdVel, heldBack])
 
   function requestModeChange(newMode) {
     // Skip the adjacency check when the current real mode isn't known —
@@ -282,6 +338,21 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
           </div>
         )}
 
+        {safetyOff && (
+          <div
+            className="flash-warn"
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: 11,
+              color: '#EF4444',
+              padding: '4px 12px',
+              borderBottom: '1px solid var(--border)',
+            }}
+          >
+            ⚠ SAFETY OFF — NO OBSTACLES CHECK DURING TELEOP
+          </div>
+        )}
+
         {/* Main content */}
         <div className="flex flex-1 min-h-0 gap-0">
           {/* Everything the blocked overlay covers. Scoped to the control surfaces rather
@@ -290,7 +361,7 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
           <div className="flex flex-1 min-w-0" style={{ position: 'relative' }}>
             {/* Blocked overlay — shown while nav2 owns the robot.
                 This is an AFFORDANCE, not a safety mechanism: quadruped_controller already
-                refuses /quadruped_cmd_vel_ui, /joy and all three teleop services while
+                refuses both teleop topics, /joy and all three teleop services while
                 unpaused, so keyboard input reaching past this overlay changes nothing. */}
             {blocked && (
               <div
@@ -324,6 +395,24 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
               </div>
             )}
 
+            {/* Overlaid rather than in the column, so showing it never reflows the controls. */}
+            {obstacleHold && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  bottom: 8,
+                  zIndex: 5,
+                  display: 'flex',
+                  justifyContent: 'center',
+                  pointerEvents: 'none',
+                }}
+              >
+                <Toast visible message="Obstacle ahead" />
+              </div>
+            )}
+
             {/* Left: controls — side-by-side GearShift + SpeedSelector, hints pinned to bottom */}
             <div
               className="flex flex-col gap-3 p-3 flex-shrink-0"
@@ -338,11 +427,48 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
                     uncertain={modeUncertain}
                   />
                 </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="flex flex-col gap-3" style={{ flex: 1, minWidth: 0 }}>
                   <SpeedSelector speed={speedLevel} onChange={setSpeedLevel} disabled={joyActive} />
+
+                  {/* Same look as SPEED; under it, where the taller gear column leaves room. */}
+                  <div className="flex flex-col gap-1">
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 10,
+                        color: 'var(--text-dim)',
+                        letterSpacing: '0.06em',
+                        marginBottom: 4,
+                      }}
+                    >
+                      SAFETY
+                    </span>
+                    <button
+                      aria-pressed={!safetyOff}
+                      onClick={() => setSafety(!safetyOff)}
+                      title={safetyOff ? 'Click to check obstacles again' : 'Click to drive without obstacle checking'}
+                      style={{
+                        width: '100%',
+                        padding: '10px 14px',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 12,
+                        letterSpacing: '0.08em',
+                        textAlign: 'center',
+                        borderRadius: 4,
+                        border: `1px solid ${safetyOff ? '#EF4444' : 'var(--accent-bright)'}`,
+                        background: safetyOff ? 'rgba(239, 68, 68, 0.25)' : 'var(--accent)',
+                        color: safetyOff ? '#F87171' : '#E5E7EB',
+                        fontWeight: safetyOff ? 700 : 400,
+                        cursor: 'pointer',
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      {safetyOff ? 'DISABLED' : 'ENABLED'}
+                    </button>
+                  </div>
                 </div>
               </div>
-  
+
               {/* Key hints — keyboard mode */}
               {!joyActive && (
                 <div

@@ -209,7 +209,7 @@ local_costmap:
       # own cell at mark_threshold 0. Raise BOTH to 0.05 if this costs too much CPU.
       resolution: 0.02
       # robot_radius: 0.22
-      footprint: "[ [0.45,0.25], [0.45,-0.25], [-0.70,-0.25], [-0.70,0.25] ]"
+      footprint: "[ [0.5,0.25], [0.5,-0.25], [-0.70,-0.25], [-0.70,0.25] ]"
       plugins: ["stvl_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -293,7 +293,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       # robot_radius: 0.22
-      footprint: "[ [0.45,0.25], [0.45,-0.25], [-0.70,-0.25], [-0.70,0.25] ]"
+      footprint: "[ [0.5,0.25], [0.5,-0.25], [-0.70,-0.25], [-0.70,0.25] ]"
       resolution: 0.02
       track_unknown_space: true
       plugins: ["static_layer", "stvl_layer", "inflation_layer"]
@@ -405,6 +405,15 @@ behavior_server:
       plugin: "nav2_behaviors::Wait"
     assisted_teleop:
       plugin: "nav2_behaviors::AssistedTeleop"
+    # Safety teleop: quadruped_controller holds an assisted_teleop goal while paused, and its
+    # output bypasses cmd_vel_nav so it is a teleop input, not a nav2 one.
+    cmd_vel_teleop: /safety_quadruped_cmd_vel_ui
+    cmd_vel_teleop_out: /quadruped_cmd_vel_teleop
+    cmd_vel_teleop_timeout: 1.0       # UI repeats at 4 Hz
+    projection_time: 1.0
+    simulation_time_step: 0.02        # under one costmap cell, so a pole can't slip inside the edge-only footprint check
+    min_projection_distance: 0.15
+    stop_on_collision: true
     local_frame: odom
     global_frame: map
     robot_base_frame: base_footprint

@@ -42,6 +42,18 @@ QuadrupedController::QuadrupedController()
     "/quadruped_cmd_vel_ui", 10,
     std::bind(&QuadrupedController::cmdVelUiCallback, this, std::placeholders::_1));
 
+  // The UI's /safety_quadruped_cmd_vel_ui after nav2's assisted_teleop has checked it against
+  // the local costmap. That behavior only runs while it has a goal, which this node holds
+  // for as long as the robot is paused.
+  quadruped_cmd_vel_teleop_sub_ = create_subscription<geometry_msgs::msg::Twist>(
+    "/quadruped_cmd_vel_teleop", 10,
+    std::bind(&QuadrupedController::cmdVelTeleopCallback, this, std::placeholders::_1));
+
+  assisted_teleop_client_ = rclcpp_action::create_client<AssistedTeleop>(this, "/assisted_teleop");
+  // 1Hz is the retry rate; pause and unpause also call it directly.
+  assisted_teleop_timer_ = create_wall_timer(
+    1s, std::bind(&QuadrupedController::assistedTeleopTimerCallback, this));
+
   // Nav2's final velocity, after velocity_smoother and collision_monitor. Plain Twist
   // rather than TwistStamped: nav2's TwistPublisher only stamps when
   // enable_stamped_cmd_vel is true, which defaults false and nav2_params.yaml never sets.
@@ -238,6 +250,7 @@ void QuadrupedController::staleAllInputsLocked()
   const rclcpp::Time kNever{0, 0, RCL_ROS_TIME};
   last_joy_time_ = kNever;
   last_ui_time_ = kNever;
+  last_teleop_time_ = kNever;
   last_nav_time_ = kNever;
 }
 
@@ -287,6 +300,102 @@ void QuadrupedController::cmdVelUiCallback(const geometry_msgs::msg::Twist::Shar
   }
   ui_twist_ = *msg;
   last_ui_time_ = this->now();
+}
+
+void QuadrupedController::cmdVelTeleopCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(vel_mutex_);
+  if (!paused_) {
+    return;
+  }
+  // assisted_teleop publishes every cycle, zeros included. Same as idle joy: take the first
+  // zero, then let the input age out instead of sending Move(0,0,0) forever.
+  const bool is_zero = msg->linear.x == 0.0 && msg->linear.y == 0.0 && msg->angular.z == 0.0;
+  if (is_zero && prev_teleop_zero_) {
+    return;
+  }
+  prev_teleop_zero_ = is_zero;
+  teleop_twist_ = *msg;
+  last_teleop_time_ = this->now();
+}
+
+void QuadrupedController::assistedTeleopTimerCallback()
+{
+  using GoalHandle = rclcpp_action::ClientGoalHandle<AssistedTeleop>;
+  const bool paused = isPaused();
+  const auto now = this->now();
+
+  // A server that crashed or restarted never answers for its old goal. assisted_teleop sends
+  // feedback every cycle, so a few seconds of silence means the goal is gone.
+  if (assisted_teleop_state_ != TeleopGoal::kNone &&
+    (now - assisted_teleop_seen_).seconds() > 3.0)
+  {
+    RCLCPP_WARN(get_logger(), "assisted_teleop went silent, dropping its goal");
+    assisted_teleop_state_ = TeleopGoal::kNone;
+    assisted_teleop_goal_.reset();
+    ++assisted_teleop_seq_;
+  }
+
+  if (!paused && assisted_teleop_state_ == TeleopGoal::kActive) {
+    try {
+      assisted_teleop_client_->async_cancel_goal(assisted_teleop_goal_);
+      assisted_teleop_state_ = TeleopGoal::kCanceling;
+    } catch (const rclcpp_action::exceptions::UnknownGoalHandleError &) {
+      assisted_teleop_state_ = TeleopGoal::kNone;
+      assisted_teleop_goal_.reset();
+    }
+    return;
+  }
+
+  if (!paused || assisted_teleop_state_ != TeleopGoal::kNone ||
+    !assisted_teleop_client_->action_server_is_ready())
+  {
+    return;
+  }
+
+  const uint64_t seq = ++assisted_teleop_seq_;
+  rclcpp_action::Client<AssistedTeleop>::SendGoalOptions options;
+  options.goal_response_callback = [this, seq](const GoalHandle::SharedPtr & handle) {
+      if (seq != assisted_teleop_seq_) {
+        // Abandoned while waiting; don't leave it running on the server.
+        if (handle) {
+          assisted_teleop_client_->async_cancel_goal(handle);
+        }
+        return;
+      }
+      if (!handle) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 10000, "assisted_teleop rejected the goal, retrying");
+        assisted_teleop_state_ = TeleopGoal::kNone;
+        return;
+      }
+      assisted_teleop_goal_ = handle;
+      assisted_teleop_state_ = TeleopGoal::kActive;
+      assisted_teleop_seen_ = this->now();
+    };
+  options.feedback_callback = [this, seq](
+    GoalHandle::SharedPtr, const std::shared_ptr<const AssistedTeleop::Feedback>) {
+      if (seq == assisted_teleop_seq_) {
+        assisted_teleop_seen_ = this->now();
+      }
+    };
+  options.result_callback = [this, seq](const GoalHandle::WrappedResult & result) {
+      if (seq != assisted_teleop_seq_) {
+        return;
+      }
+      if (result.code != rclcpp_action::ResultCode::CANCELED && isPaused()) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 10000,
+          "assisted_teleop goal ended (code %d), resending", static_cast<int>(result.code));
+      }
+      assisted_teleop_state_ = TeleopGoal::kNone;
+      assisted_teleop_goal_.reset();
+    };
+
+  // time_allowance 0 = no timeout: the goal lasts until unpause cancels it.
+  assisted_teleop_state_ = TeleopGoal::kPending;
+  assisted_teleop_seen_ = now;
+  assisted_teleop_client_->async_send_goal(AssistedTeleop::Goal(), options);
 }
 
 void QuadrupedController::sportStateCallback(
@@ -456,14 +565,20 @@ void QuadrupedController::moveTimerCallback()
     // while a goal is active, so this bridges normal gaps with margin. Staleness is a
     // reliable idle signal because the smoother latches `stopped_` and stops publishing
     // once it has decelerated -- it never spams zeros.
+    //
+    // 0.3s for teleop too: assisted_teleop publishes every behavior cycle (10Hz), and its
+    // repeated zeros are dropped in cmdVelTeleopCallback so it goes stale the same way.
+    // The UI only ever drives one of ui / teleop at a time, by its Disable Safety toggle.
     joy_fresh = joy_fresh && paused_;
     ui_fresh = ui_fresh && paused_;
+    bool teleop_fresh = paused_ && (now - last_teleop_time_).seconds() < 0.3;
     bool nav_fresh = !paused_ && (now - last_nav_time_).seconds() < 0.3;
-    bool input_fresh = joy_fresh || ui_fresh || nav_fresh;
+    bool input_fresh = joy_fresh || ui_fresh || teleop_fresh || nav_fresh;
     static const geometry_msgs::msg::Twist kZeroTwist{};
     const auto & chosen = joy_fresh ? joy_twist_
                         : (ui_fresh ? ui_twist_
-                        : (nav_fresh ? nav_twist_ : kZeroTwist));
+                        : (teleop_fresh ? teleop_twist_
+                        : (nav_fresh ? nav_twist_ : kZeroTwist)));
     lx = static_cast<float>(chosen.linear.x);
     ly = static_cast<float>(chosen.linear.y);
     az = static_cast<float>(chosen.angular.z);
@@ -652,6 +767,7 @@ void QuadrupedController::quadrupedPauseCallback(
     unitree_api::msg::Request req_zero;
     sport_req_.Move(req_zero, 0.0f, 0.0f, 0.0f);
     consolidated_pub_->publish(geometry_msgs::msg::Twist{});
+    assistedTeleopTimerCallback();
 
     res->success = true;
     res->message = "Paused: teleop enabled, nav2 cmd_vel ignored";
@@ -682,6 +798,7 @@ void QuadrupedController::quadrupedPauseCallback(
     paused_ = false;
     staleAllInputsLocked();
   }
+  assistedTeleopTimerCallback();
 
   res->success = true;
   res->message = "Unpaused: nav2 owns motion, teleop ignored";
