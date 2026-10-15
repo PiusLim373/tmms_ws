@@ -34,10 +34,6 @@ QuadrupedController::QuadrupedController()
   // clock, so the display follows the robot even when the two clocks disagree.
   const double clock_rate = declare_parameter<double>("clock_rate", 50.0);  // Hz, 0 = off
 
-  joy_sub_ = create_subscription<sensor_msgs::msg::Joy>(
-    "/joy", 10,
-    std::bind(&QuadrupedController::joyCallback, this, std::placeholders::_1));
-
   quadruped_cmd_vel_ui_sub_ = create_subscription<geometry_msgs::msg::Twist>(
     "/quadruped_cmd_vel_ui", 10,
     std::bind(&QuadrupedController::cmdVelUiCallback, this, std::placeholders::_1));
@@ -245,51 +241,12 @@ bool QuadrupedController::rejectUnlessPaused(std::string & message)
 void QuadrupedController::staleAllInputsLocked()
 {
   // Backdate every input so nothing cached before the switch can drive the robot after
-  // it. Without this a stick held during autonomy would take effect the instant pause
-  // engages, and teleop would keep steering for up to 0.5s after handing over to nav2.
+  // it. Without this a key held during autonomy would take effect the instant pause
+  // engages, and teleop would keep steering for up to 1s after handing over to nav2.
   const rclcpp::Time kNever{0, 0, RCL_ROS_TIME};
-  last_joy_time_ = kNever;
   last_ui_time_ = kNever;
   last_teleop_time_ = kNever;
   last_nav_time_ = kNever;
-}
-
-bool QuadrupedController::isJoyInputZero(const sensor_msgs::msg::Joy::SharedPtr & msg) const
-{
-  constexpr float kEpsilon = 0.01f;
-  bool axes_zero = std::abs(msg->axes[0]) < kEpsilon &&
-                    std::abs(msg->axes[1]) < kEpsilon &&
-                    std::abs(msg->axes[5]) < kEpsilon;
-  bool buttons_zero = msg->buttons[26] == 0 &&
-                       msg->buttons[27] == 0 &&
-                       msg->buttons[28] == 0;
-  return axes_zero && buttons_zero;
-}
-
-void QuadrupedController::joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg)
-{
-  std::lock_guard<std::mutex> lock(vel_mutex_);
-  // Unpaused means nav2 owns the robot: drop the axes AND the mode buttons, and leave
-  // last_joy_time_ alone so joy is already stale by the time pause comes back.
-  if (!paused_) {
-    return;
-  }
-  bool is_zero = isJoyInputZero(msg);
-  if (is_zero && prev_joy_zero_) {
-    // Idle joy still publishing zero at a high rate (browser gamepad driver) —
-    // skip so last_joy_time_ ages out and moveTimerCallback stops re-sending
-    // Move(0,0,0), instead of stomping in place indefinitely.
-    return;
-  }
-  prev_joy_zero_ = is_zero;
-
-  joy_twist_.linear.x  =  msg->axes[1];
-  joy_twist_.linear.y  =  msg->axes[0];
-  joy_twist_.angular.z = -msg->axes[5];
-  last_joy_time_ = this->now();
-  sit_btn_ = msg->buttons[27];
-  standlock_btn_ = msg->buttons[26];
-  standmove_btn_ = msg->buttons[28];
 }
 
 void QuadrupedController::cmdVelUiCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
@@ -308,8 +265,8 @@ void QuadrupedController::cmdVelTeleopCallback(const geometry_msgs::msg::Twist::
   if (!paused_) {
     return;
   }
-  // assisted_teleop publishes every cycle, zeros included. Same as idle joy: take the first
-  // zero, then let the input age out instead of sending Move(0,0,0) forever.
+  // assisted_teleop publishes every cycle, zeros included. Take the first zero, then let the
+  // input age out instead of sending Move(0,0,0) forever, which stomps the robot in place.
   const bool is_zero = msg->linear.x == 0.0 && msg->linear.y == 0.0 && msg->angular.z == 0.0;
   if (is_zero && prev_teleop_zero_) {
     return;
@@ -546,15 +503,12 @@ std::string QuadrupedController::modeToString(uint8_t mode) const
 void QuadrupedController::moveTimerCallback()
 {
   float lx, ly, az;
-  int sit, standlock, standmove;
-  int prev_sit, prev_standlock, prev_standmove;
   ControlMode mode;
   bool publish_move;
 
   {
     std::lock_guard<std::mutex> lock(vel_mutex_);
     auto now = this->now();
-    bool joy_fresh = (now - last_joy_time_).seconds() < 0.5;
     bool ui_fresh = (now - last_ui_time_).seconds() < 1.0;
     // Hard mode switch, not a priority mux: paused hands the robot to the operator and
     // ignores nav2, unpaused hands it to nav2 and ignores the operator. The paused_
@@ -569,28 +523,17 @@ void QuadrupedController::moveTimerCallback()
     // 0.3s for teleop too: assisted_teleop publishes every behavior cycle (10Hz), and its
     // repeated zeros are dropped in cmdVelTeleopCallback so it goes stale the same way.
     // The UI only ever drives one of ui / teleop at a time, by its Disable Safety toggle.
-    joy_fresh = joy_fresh && paused_;
     ui_fresh = ui_fresh && paused_;
     bool teleop_fresh = paused_ && (now - last_teleop_time_).seconds() < 0.3;
     bool nav_fresh = !paused_ && (now - last_nav_time_).seconds() < 0.3;
-    bool input_fresh = joy_fresh || ui_fresh || teleop_fresh || nav_fresh;
+    bool input_fresh = ui_fresh || teleop_fresh || nav_fresh;
     static const geometry_msgs::msg::Twist kZeroTwist{};
-    const auto & chosen = joy_fresh ? joy_twist_
-                        : (ui_fresh ? ui_twist_
+    const auto & chosen = ui_fresh ? ui_twist_
                         : (teleop_fresh ? teleop_twist_
-                        : (nav_fresh ? nav_twist_ : kZeroTwist)));
+                        : (nav_fresh ? nav_twist_ : kZeroTwist));
     lx = static_cast<float>(chosen.linear.x);
     ly = static_cast<float>(chosen.linear.y);
     az = static_cast<float>(chosen.angular.z);
-    sit = sit_btn_;
-    standlock = standlock_btn_;
-    standmove = standmove_btn_;
-    prev_sit = prev_sit_btn_;
-    prev_standlock = prev_standlock_btn_;
-    prev_standmove = prev_standmove_btn_;
-    prev_sit_btn_ = sit_btn_;
-    prev_standlock_btn_ = standlock_btn_;
-    prev_standmove_btn_ = standmove_btn_;
     mode = control_mode_;
     // Publish while input is fresh, plus exactly one more tick on the falling
     // edge (to send a final Move(0,0,0)) — then stay silent instead of
@@ -608,15 +551,6 @@ void QuadrupedController::moveTimerCallback()
     consolidated.linear.y  = ly;
     consolidated.angular.z = az;
     consolidated_pub_->publish(consolidated);
-  }
-
-  std::string msg_out;
-  if (sit == 1 && prev_sit == 0) {
-    executeCmd("stand_down", msg_out);
-  } else if (standlock == 1 && prev_standlock == 0) {
-    executeCmd("stand_up", msg_out);
-  } else if (standmove == 1 && prev_standmove == 0) {
-    executeCmd("balance_stand", msg_out);
   }
 }
 

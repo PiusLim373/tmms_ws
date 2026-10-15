@@ -1,6 +1,6 @@
 # HTX Teleoperated Mobile Manipulator System (TMMS)
 
-ROS2 Jazzy workspace for the HTX Teleoperated Mobile Manipulator System — a Unitree B2 quadruped with a Unitree Z1 arm, controlled via SpaceNavigator, gamepad, or the web UI.
+ROS2 Jazzy workspace for the HTX Teleoperated Mobile Manipulator System — a Unitree B2 quadruped with a Unitree Z1 arm, controlled via SpaceNavigator or the web UI.
 
 ## Repository Structure
 
