@@ -183,7 +183,7 @@
     pcd_save:
       # savePCD() (LIVMapper.cpp:641) runs only AFTER run()'s rclcpp::ok() loop exits, i.e. on
       # Ctrl-C. Killing the launch harder than SIGINT loses the whole map.
-      # Output path is hardcoded to ROOT_DIR/Log/PCD/ -> src/FAST-LIVO2-ROS2/Log/PCD/
+      # Output path is hardcoded to ROOT_DIR/Log/PCD/ -> src/tmms_mapping/FAST-LIVO2-ROS2/Log/PCD/
       #   all_raw_points.pcd          full RGB cloud
       #   all_downsampled_points.pcd  voxel-filtered at filter_size_pcd
       pcd_save_en: true

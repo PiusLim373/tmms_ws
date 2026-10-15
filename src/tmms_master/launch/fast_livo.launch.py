@@ -35,7 +35,7 @@ img_en:=0 runs LIO-only, which isolates lidar-inertial problems from camera-extr
 
 Ctrl-C THIS launch (not the bag) when the run finishes: savePCD() runs only after run()'s
 rclcpp::ok() loop exits, so SIGINT is what writes the map. The output path is compiled into
-the binary as ROOT_DIR/Log/PCD/ -> tmms_ws/src/tmms_mapping/src/FAST-LIVO2-ROS2/Log/PCD/
+the binary as ROOT_DIR/Log/PCD/ -> tmms_ws/src/tmms_mapping/FAST-LIVO2-ROS2/Log/PCD/
 (all_raw_points.pcd, all_downsampled_points.pcd). Killing harder than SIGINT loses the map.
 
 This launch file lives in tmms_master rather than in fast_livo or mapping_utils so the
