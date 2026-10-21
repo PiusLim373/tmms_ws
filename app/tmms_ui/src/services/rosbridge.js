@@ -178,9 +178,10 @@ export function setQuadrupedPaused(paused, onResult, onError) {
 }
 
 // Preempts the active nav2 goal on the yasmin FSM, which then lands in `canceled`.
-// std_srvs/Empty has no response fields — arriving in onResult IS the whole answer.
+// std_srvs/Trigger: yasmin can refuse (mid map switch, nothing running), so branch on
+// result.success and show result.message.
 export function cancelNavGoal(onResult, onError) {
-  callRosService('/cancel_goal', 'std_srvs/srv/Empty', {}, onResult, onError)
+  callRosService('/cancel_goal', 'std_srvs/srv/Trigger', {}, onResult, onError)
 }
 
 // BARE map name, never a path: localization_manager builds <maps_dir>/png/<name>.yaml

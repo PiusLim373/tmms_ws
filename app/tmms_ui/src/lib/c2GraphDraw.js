@@ -43,7 +43,7 @@ export function drawGraphLayer(ctx, toScreen, { points, links, selectedKey, pend
     if (plan.dashed) ctx.setLineDash([2, 9])
     const done = plan.doneLegs ?? 0
     plan.legs.forEach((leg, k) => {
-      ctx.strokeStyle = k < done ? DONE_COLOR : accent
+      ctx.strokeStyle = (plan.doneFlags ? plan.doneFlags[k] : k < done) ? DONE_COLOR : accent
       polyline(leg)
     })
     ctx.setLineDash([])

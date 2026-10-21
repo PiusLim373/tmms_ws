@@ -40,7 +40,9 @@ function jointTempColor(c) {
 
 // blocked / onPause / onNavigateDashboard are optional, so the dashboard and mapping pages
 // keep working unchanged; only the navigation page passes them.
-export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboard }) {
+// `compact` stacks the controls above the joystick and leaves out the joint temps, for a
+// narrow column (C2's right side); the dashboard keeps the side-by-side layout.
+export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboard, compact = false }) {
   // Browser-native flight controller capture — publishes directly to /joy,
   // a drop-in replacement for the native joy_node. Runs only while this
   // widget is mounted (see useTopicActivity('/joy', ...) below for the
@@ -297,7 +299,7 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
         onCancel={() => { setModalOpen(false); setPendingMode(null) }}
       />
 
-      <div className="panel flex flex-col h-full" style={{ overflow: 'hidden', position: 'relative' }}>
+      <div className={`panel flex flex-col${compact ? '' : ' h-full'}`} style={{ overflow: compact ? 'visible' : 'hidden', position: 'relative' }}>
         {/* Title bar */}
         <div className="panel-header">
           <span>QUADRUPED CONTROL</span>
@@ -354,11 +356,11 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
         )}
 
         {/* Main content */}
-        <div className="flex flex-1 min-h-0 gap-0">
+        <div className="flex flex-1 min-h-0 gap-0" style={compact ? { flex: '1 0 auto' } : undefined}>
           {/* Everything the blocked overlay covers. Scoped to the control surfaces rather
               than the whole panel so the joint temps stay readable while nav2 drives — an
               overheating joint is exactly what you want to catch during an autonomous run. */}
-          <div className="flex flex-1 min-w-0" style={{ position: 'relative' }}>
+          <div className="flex flex-1 min-w-0" style={{ position: 'relative', flexDirection: compact ? 'column' : 'row' }}>
             {/* Blocked overlay — shown while nav2 owns the robot.
                 This is an AFFORDANCE, not a safety mechanism: quadruped_controller already
                 refuses both teleop topics, /joy and all three teleop services while
@@ -416,7 +418,7 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
             {/* Left: controls — side-by-side GearShift + SpeedSelector, hints pinned to bottom */}
             <div
               className="flex flex-col gap-3 p-3 flex-shrink-0"
-              style={{ minWidth: 300, height: '100%' }}
+              style={compact ? { minWidth: 0 } : { minWidth: 300, height: '100%' }}
             >
               <div className="flex gap-2" style={{ flex: 1, minHeight: 0, alignItems: 'flex-start' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -509,7 +511,7 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
             {/* Right: TRANSLATION joystick + ROTATION knob (vertical) */}
             <div
               className="flex flex-1 items-center justify-center gap-4 p-4"
-              style={{ borderLeft: '1px solid var(--border)' }}
+              style={compact ? { borderTop: '1px solid var(--border)', flexWrap: 'wrap' } : { borderLeft: '1px solid var(--border)' }}
             >
               <JoystickDisplay
                 x={joystickX}
@@ -533,6 +535,7 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
           </div>
 
           {/* Temps: 12 joint motor temperatures from /lf/lowstate */}
+          {!compact && (
           <div
             className="flex flex-col gap-1 p-3 flex-shrink-0"
             style={{ minWidth: 170, borderLeft: '1px solid var(--border)', overflowY: 'auto' }}
@@ -552,6 +555,7 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
               )
             })}
           </div>
+          )}
         </div>
 
         {/* Only on pages that pass the handler — the dashboard itself has no reason to

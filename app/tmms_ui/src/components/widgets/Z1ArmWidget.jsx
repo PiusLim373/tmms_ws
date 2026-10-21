@@ -29,7 +29,9 @@ const GROUP_LABEL_STYLE = {
   textTransform: 'uppercase',
 }
 
-export function Z1ArmWidget({ heldKeys }) {
+// `compact` shows only the presets and speed (keyboard arm control stays on), for a narrow
+// column (C2's teleop section); the dashboard keeps the joysticks and gripper buttons.
+export function Z1ArmWidget({ heldKeys, compact = false }) {
   // Browser-native SpaceMouse capture (WebHID) — publishes directly to
   // /spacenav/joy, a drop-in replacement for the native spacenav_node. Runs
   // only while this widget is mounted; see useTopicActivity('/spacenav/joy', ...)
@@ -199,7 +201,7 @@ export function Z1ArmWidget({ heldKeys }) {
   }, [])
 
   return (
-    <div className="panel flex flex-col h-full" style={{ overflow: 'hidden' }}>
+    <div className={`panel flex flex-col${compact ? '' : ' h-full'}`} style={{ overflow: compact ? 'visible' : 'hidden' }}>
       {/* Title bar */}
       <div className="panel-header">
         <span>Z1 ARM CONTROL</span>
@@ -253,7 +255,7 @@ export function Z1ArmWidget({ heldKeys }) {
         {/* Left: arm presets + speed side-by-side, hints pinned to bottom */}
         <div
           className="flex flex-col gap-3 p-3 flex-shrink-0"
-          style={{ minWidth: 300, height: '100%' }}
+          style={compact ? { minWidth: 0 } : { minWidth: 300, height: '100%' }}
         >
           <div className="flex gap-2" style={{ flex: 1, minHeight: 0, alignItems: 'flex-start' }}>
             {/* ARM PRESET column */}
@@ -335,6 +337,7 @@ export function Z1ArmWidget({ heldKeys }) {
           <Toast visible={spacenavActive} message="SpaceMouse active — UI joystick disabled" />
         </div>
 
+        {!compact && (<>
         {/* Right: two labeled groups [joystick + Z-knob] + gripper buttons */}
         <div
           className="flex flex-1 flex-col min-h-0"
@@ -504,6 +507,7 @@ export function Z1ArmWidget({ heldKeys }) {
             </button>
           </div>
         </div>
+        </>)}
       </div>
     </div>
   )

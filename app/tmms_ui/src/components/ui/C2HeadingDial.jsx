@@ -100,7 +100,7 @@ export function C2HeadingDial({ yaw, isSet, onChange, onClear, disabled = false 
         </div>
       </div>
 
-      {isSet ? (
+      {isSet ? (onClear && (
         <button
           className="btn-icon"
           style={{ fontSize: 11, padding: '4px 8px', alignSelf: 'flex-start' }}
@@ -109,7 +109,7 @@ export function C2HeadingDial({ yaw, isSet, onChange, onClear, disabled = false 
         >
           Clear facing
         </button>
-      ) : (
+      )) : (
         <div style={{ fontSize: 10, color: 'var(--text-dim)', lineHeight: 1.4 }}>
           Not set — drag the dial, or the ring handle on the map. Hold Shift to snap to 15°.
         </div>

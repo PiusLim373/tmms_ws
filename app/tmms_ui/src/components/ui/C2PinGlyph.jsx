@@ -1,6 +1,6 @@
 import { PIN_META } from '../../lib/c2Pins'
 
-export function C2PinGlyph({ type, size = 16 }) {
+export function C2PinGlyph({ type, size = 16, unpaired = false }) {
   const color = `var(${PIN_META[type]?.colorVar ?? '--text-dim'})`
   const common = { width: size, height: size, viewBox: '0 0 24 24', style: { flexShrink: 0 } }
 
@@ -27,6 +27,28 @@ export function C2PinGlyph({ type, size = 16 }) {
         >
           H
         </text>
+      </svg>
+    )
+  }
+  if (type === 'map_switch') {
+    return (
+      <svg {...common}>
+        <circle
+          cx="12" cy="12" r="9.5"
+          fill={unpaired ? 'none' : color}
+          stroke={unpaired ? color : '#fff'}
+          strokeWidth={unpaired ? 2.4 : 1.6}
+          strokeDasharray={unpaired ? '4 3' : undefined}
+        />
+        {!unpaired && (
+          <text
+            x="12" y="12.5" fill="#fff" fontSize="12" fontWeight="700"
+            textAnchor="middle" dominantBaseline="central"
+            fontFamily="Inter, system-ui, sans-serif"
+          >
+            ⇄
+          </text>
+        )}
       </svg>
     )
   }

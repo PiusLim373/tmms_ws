@@ -8,7 +8,8 @@ const deg = (q) => `${degFromYaw(quaternionToYaw(q)).toFixed(0)}°`
 // Its own modal rather than the shared WarningModal: that one renders `body` as a sentence,
 // and the whole point of confirming here is seeing the actual numbers before they leave.
 // Shows the tmms_msgs/Waypoint list exactly as it will be sent.
-export function ConfirmSendModal({ open, navplanId, waypoints, robotStart, onConfirm, onCancel }) {
+// `extra` (optional) sits at the left of the buttons, for a page's own send-time options.
+export function ConfirmSendModal({ open, navplanId, waypoints, robotStart, onConfirm, onCancel, extra = null }) {
   if (!open) return null
 
   const maps = waypoints.length
@@ -102,7 +103,8 @@ export function ConfirmSendModal({ open, navplanId, waypoints, robotStart, onCon
           </div>
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: 12, borderTop: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, padding: 12, borderTop: '1px solid var(--border)' }}>
+          {extra && <div style={{ marginRight: 'auto', minWidth: 0 }}>{extra}</div>}
           <button className="btn-icon px-4 py-1.5 text-xs" onClick={onCancel} autoFocus>
             Cancel
           </button>
