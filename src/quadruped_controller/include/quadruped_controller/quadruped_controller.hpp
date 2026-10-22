@@ -11,7 +11,6 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
-#include "sensor_msgs/msg/joy.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rosgraph_msgs/msg/clock.hpp"
@@ -37,7 +36,6 @@ public:
   ~QuadrupedController() = default;
 
 private:
-  void joyCallback(const sensor_msgs::msg::Joy::SharedPtr msg);
   void cmdVelUiCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void cmdVelTeleopCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void cmdVelNavCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
@@ -79,25 +77,16 @@ private:
   std::string modeToString(uint8_t mode) const;
   void publishBodyHeight(float height);
   void deactivatePose();
-  bool isJoyInputZero(const sensor_msgs::msg::Joy::SharedPtr & msg) const;
 
   SportClient sport_req_;
 
   enum class ControlMode { kMove, kPose };
 
   // All protected by vel_mutex_
-  int sit_btn_{0};
-  int standlock_btn_{0};
-  int standmove_btn_{0};
-  int prev_sit_btn_{0};
-  int prev_standlock_btn_{0};
-  int prev_standmove_btn_{0};
-  geometry_msgs::msg::Twist joy_twist_;
   geometry_msgs::msg::Twist ui_twist_;
   // The UI's safety teleop, after nav2's assisted_teleop has checked it against the costmap.
   geometry_msgs::msg::Twist teleop_twist_;
   geometry_msgs::msg::Twist nav_twist_;
-  rclcpp::Time last_joy_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_ui_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_teleop_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_nav_time_{0, 0, RCL_ROS_TIME};
@@ -120,7 +109,6 @@ private:
   std::string current_navplan_status_;
   ControlMode control_mode_{ControlMode::kMove};
   bool input_was_fresh_{false};
-  bool prev_joy_zero_{true};
   bool prev_teleop_zero_{true};
   std::string last_cmd_;
   float pose_roll_{0.0f};
@@ -135,7 +123,6 @@ private:
   // map origin rather than as unknown.
   geometry_msgs::msg::Pose pose_;
 
-  rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr quadruped_cmd_vel_ui_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr quadruped_cmd_vel_teleop_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_nav_sub_;

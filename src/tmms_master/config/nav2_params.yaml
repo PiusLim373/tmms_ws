@@ -15,7 +15,7 @@ amcl:
     odom_frame_id: "odom"
     global_frame_id: "map"
 
-    # The B2 strafes -- quadruped_controller maps a joystick axis straight to linear.y,
+    # The B2 strafes -- quadruped_controller passes the UI's linear.y straight through,
     # and controller_server's MPPI is already configured with motion_model: "Omni".
     # On the differential default AMCL's motion model treats lateral motion as
     # impossible and tries to explain every strafe as rotation.
@@ -141,6 +141,8 @@ controller_server:
       required_movement_radius: 0.2
       required_movement_angle: 0.2
       movement_time_allowance: 15.0
+      # Patched in our nav2: no timeout while paused, the allowance restarts on unpause
+      pause_status_topic: /quadruped_main_status
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"

@@ -37,13 +37,11 @@ class TmmsMockNode(Node):
         super().__init__('tmms_mock')
 
         self._spacemouse_on = False
-        self._flight_ctrl_on = False
         self._last_z1_twist = None
         self._last_quad_twist = None
 
         # Publishers — simulate physical devices only
         self._spacenav_joy_pub = self.create_publisher(Joy, '/spacenav/joy', 10)
-        self._joy_pub = self.create_publisher(Joy, '/joy', 10)
 
         # Mock camera publishers
         self._cam_pubs = [
@@ -57,7 +55,6 @@ class TmmsMockNode(Node):
 
         # Device-connection SetBool services
         self.create_service(SetBool, 'connect_spacemouse', self._connect_spacemouse)
-        self.create_service(SetBool, 'connect_flight_controller', self._connect_flight_controller)
 
         # Mock robot: map-frame pose + lidar scan raycast against the 2D map
         self.declare_parameter('maps_dir', os.path.expanduser('~/.htxgrrt/maps'))
@@ -245,14 +242,6 @@ class TmmsMockNode(Node):
         res.message = f'SpaceMouse {state}'
         return res
 
-    def _connect_flight_controller(self, req, res):
-        self._flight_ctrl_on = req.data
-        state = 'connected' if req.data else 'disconnected'
-        self.get_logger().info(f'Flight controller {state}')
-        res.success = True
-        res.message = f'Flight controller {state}'
-        return res
-
     def _cam_tick(self):
         t = time.monotonic()
         hue = int((t * 30) % 180)
@@ -279,14 +268,6 @@ class TmmsMockNode(Node):
             joy.axes = axes
             joy.buttons = [0, 0]
             self._spacenav_joy_pub.publish(joy)
-
-        if self._flight_ctrl_on:
-            axes = [0.5 * math.sin(t + i * 0.5) for i in range(6)]
-            joy = Joy()
-            joy.header.stamp = self.get_clock().now().to_msg()
-            joy.axes = axes
-            joy.buttons = [0] * 29
-            self._joy_pub.publish(joy)
 
     def _print_status(self):
         if self._last_z1_twist:

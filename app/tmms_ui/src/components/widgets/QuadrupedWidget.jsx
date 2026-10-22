@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { publishQuadrupedCmdVel, callService, subscribe } from '../../services/rosbridge'
 import { useTopicActivity } from '../../hooks/useTopicActivity'
-import { useGamepad } from '../../hooks/useGamepad'
 import { GearShift } from '../ui/GearShift'
 import { SpeedSelector } from '../ui/SpeedSelector'
 import { JoystickDisplay, AxisKnob } from '../ui/JoystickDisplay'
@@ -43,11 +42,7 @@ function jointTempColor(c) {
 // `compact` stacks the controls above the joystick and leaves out the joint temps, for a
 // narrow column (C2's right side); the dashboard keeps the side-by-side layout.
 export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboard, compact = false }) {
-  // Browser-native flight controller capture — publishes directly to /joy,
-  // a drop-in replacement for the native joy_node. Runs only while this
-  // widget is mounted (see useTopicActivity('/joy', ...) below for the
-  // resulting display/gating, unchanged from the native-driver behavior).
-  useGamepad()
+
 
   const [speedLevel, setSpeedLevel] = useState('LOW')
   const [modalOpen, setModalOpen]   = useState(false)
@@ -63,9 +58,6 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
   const isMovingRef = useRef(false)
   const desiredCmdRef = useRef({ lx: 0, ly: 0, az: 0 })
 
-  const { active: joyActive, lastMsg: joyMsg } = useTopicActivity('/joy', 'sensor_msgs/Joy', 500)
-  const joyActiveRef = useRef(joyActive)
-  useEffect(() => { joyActiveRef.current = joyActive }, [joyActive])
   const { active: statusActive, lastMsg: statusMsg } = useTopicActivity(
     '/quadruped_main_status', 'tmms_msgs/QuadrupedMainStatus', 1000
   )
@@ -180,21 +172,8 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
     wasWalkModeRef.current = isWalkMode
   }, [isWalkMode, stopLast])
 
-  // Lock speed to HIGH when gamepad takes over
-  useEffect(() => {
-    if (joyActive) setSpeedLevel('HIGH')
-  }, [joyActive])
-
   // Keyboard → publish quadruped velocity
   useEffect(() => {
-    if (joyActive) {
-      // Gamepad just took over — don't let a stale held-key command keep being
-      // repeated by the interval below while the gamepad has control.
-      desiredCmdRef.current = { lx: 0, ly: 0, az: 0 }
-      isMovingRef.current = false
-      return
-    }
-
     const shift = heldKeys.has('ShiftLeft') || heldKeys.has('ShiftRight')
 
     let lx = 0, ly = 0, az = 0
@@ -223,30 +202,20 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
     }
 
     setJoyDisplay(isWalkMode ? { x: lx, y: ly, yaw: az } : { x: 0, y: 0, yaw: 0 })
-  }, [heldKeys, isWalkMode, speedLevel, joyActive, linearSpeed, rotSpeed, sendCmdVel, heldBack])
+  }, [heldKeys, isWalkMode, speedLevel, linearSpeed, rotSpeed, sendCmdVel, heldBack])
 
   // Repeat-publish at 4Hz while a key is held or the joystick is pinned at a nonzero
   // deflection — otherwise the backend has no way to tell the UI is still connected
   // between transitions, and its patience timeout would (correctly) stop the robot.
   useEffect(() => {
     const id = setInterval(() => {
-      if (joyActiveRef.current || !isWalkModeRef.current || !isMovingRef.current) return
+      if (!isWalkModeRef.current || !isMovingRef.current) return
       if (holdRef.current) return
       const { lx, ly, az } = desiredCmdRef.current
       sendCmdVel(lx, ly, az)
     }, 250)
     return () => clearInterval(id)
   }, [sendCmdVel])
-
-  // Reflect /joy msg in display when gamepad is connected
-  useEffect(() => {
-    if (!joyActive || !joyMsg?.axes) return
-    setJoyDisplay({
-      x:   joyMsg.axes[1] ?? 0,
-      y:   joyMsg.axes[0] ?? 0,
-      yaw: -(joyMsg.axes[5] ?? 0),
-    })
-  }, [joyActive, joyMsg])
 
   // Drag callbacks — publish directly, independent of keyboard effect
   const handleJoyDrag = useCallback((x, y) => {
@@ -316,9 +285,9 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
               style={{
                 width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
                 flexShrink: 0,
-                background: joyActive ? 'var(--accent-blue)' : (isWalkMode ? '#22C55E' : 'var(--border)'),
+                background: isWalkMode ? '#22C55E' : 'var(--border)',
               }}
-              title={joyActive ? 'Gamepad active' : (actualMode !== undefined ? `Mode ${actualMode}` : 'Mode unknown')}
+              title={actualMode !== undefined ? `Mode ${actualMode}` : 'Mode unknown'}
             />
           </div>
         </div>
@@ -363,7 +332,7 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
           <div className="flex flex-1 min-w-0" style={{ position: 'relative', flexDirection: compact ? 'column' : 'row' }}>
             {/* Blocked overlay — shown while nav2 owns the robot.
                 This is an AFFORDANCE, not a safety mechanism: quadruped_controller already
-                refuses both teleop topics, /joy and all three teleop services while
+                refuses both teleop topics and all three teleop services while
                 unpaused, so keyboard input reaching past this overlay changes nothing. */}
             {blocked && (
               <div
@@ -425,12 +394,12 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
                   <GearShift
                     mode={actualMode}
                     onModeChange={requestModeChange}
-                    disabled={serviceStatus.loading || joyActive}
+                    disabled={serviceStatus.loading}
                     uncertain={modeUncertain}
                   />
                 </div>
                 <div className="flex flex-col gap-3" style={{ flex: 1, minWidth: 0 }}>
-                  <SpeedSelector speed={speedLevel} onChange={setSpeedLevel} disabled={joyActive} />
+                  <SpeedSelector speed={speedLevel} onChange={setSpeedLevel} />
 
                   {/* Same look as SPEED; under it, where the taller gear column leaves room. */}
                   <div className="flex flex-col gap-1">
@@ -471,41 +440,22 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
                 </div>
               </div>
 
-              {/* Key hints — keyboard mode */}
-              {!joyActive && (
-                <div
-                  className="flex flex-col gap-0.5"
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 10,
-                    color: 'var(--text-dim)',
-                    marginTop: 'auto',
-                  }}
-                >
-                  <span>↑↓ Forward/Back  ←→ Strafe</span>
-                  <span>⇧+←→ Yaw</span>
-                  <span style={{ color: isWalkMode ? '#22C55E' : '#EF4444', fontSize: 11 }}>
-                    {isWalkMode ? '✓ Walk — joystick active' : '✗ Walk mode required'}
-                  </span>
-                </div>
-              )}
-  
-              {/* Walk mode warning when gamepad active but not in WALK */}
-              {joyActive && !isWalkMode && (
-                <span
-                  className="flash-warn"
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 11,
-                    color: '#EF4444',
-                    marginTop: 'auto',
-                  }}
-                >
-                  ✗ Walk mode required
+              {/* Key hints */}
+              <div
+                className="flex flex-col gap-0.5"
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  color: 'var(--text-dim)',
+                  marginTop: 'auto',
+                }}
+              >
+                <span>↑↓ Forward/Back  ←→ Strafe</span>
+                <span>⇧+←→ Yaw</span>
+                <span style={{ color: isWalkMode ? '#22C55E' : '#EF4444', fontSize: 11 }}>
+                  {isWalkMode ? '✓ Walk — joystick active' : '✗ Walk mode required'}
                 </span>
-              )}
-  
-              <Toast visible={joyActive} message="Gamepad active — UI joystick disabled" />
+              </div>
             </div>
   
             {/* Right: TRANSLATION joystick + ROTATION knob (vertical) */}
@@ -520,7 +470,7 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
                 hints={JOY_HINTS}
                 size={200}
                 maxValue={linearSpeed}
-                onChange={!joyActive && isWalkMode ? handleJoyDrag : undefined}
+                onChange={isWalkMode ? handleJoyDrag : undefined}
               />
   
               <AxisKnob
@@ -529,7 +479,7 @@ export function QuadrupedWidget({ heldKeys, blocked, onPause, onNavigateDashboar
                 orientation="v"
                 trackLen={200}
                 maxValue={rotSpeed}
-                onChange={!joyActive && isWalkMode ? handleYawDrag : undefined}
+                onChange={isWalkMode ? handleYawDrag : undefined}
               />
             </div>
           </div>
