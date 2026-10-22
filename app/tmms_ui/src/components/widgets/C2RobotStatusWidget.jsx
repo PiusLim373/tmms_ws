@@ -1,5 +1,5 @@
-import { degFromYaw, formatMetres } from '../../lib/c2Coords'
-import { effectiveYaw } from '../../lib/c2Pins'
+import { Fragment } from 'react'
+import { C2PinGlyph } from '../ui/C2PinGlyph'
 
 const LOCALIZATION_HINTS = {
   not_started: { tone: 'warn', text: 'Not localized yet — relocalize before sending the robot anywhere.' },
@@ -18,40 +18,6 @@ const TONE_COLOR = {
 const PLAN_TONE = {
   accepted: 'busy', executing: 'busy', completed: 'ok',
   rejected: 'bad', cancelled: 'warn', errored: 'bad',
-}
-
-function batteryColor(pct) {
-  if (pct == null) return 'var(--text-h)'
-  if (pct > 50) return '#22C55E'
-  if (pct > 20) return '#F59E0B'
-  return '#EF4444'
-}
-
-function Stat({ label, value, color }) {
-  const empty = value == null || value === ''
-  return (
-    <div style={{ minWidth: 0 }}>
-      <div
-        style={{
-          fontSize: 10, opacity: 0.5, letterSpacing: '0.06em',
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-        }}
-      >
-        {label}
-      </div>
-      <div
-        className="val-mono"
-        style={{
-          fontSize: 12, lineHeight: 1.45,
-          color: color ?? 'var(--text-h)',
-          opacity: empty ? 0.45 : 1,
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-        }}
-      >
-        {empty ? '—' : value}
-      </div>
-    </div>
-  )
 }
 
 function Spinner() {
@@ -74,23 +40,22 @@ const subHeadStyle = {
 const btn = { fontSize: 11, padding: '6px 10px' }
 const primaryBtn = { ...btn, borderColor: 'var(--accent-bright)', color: 'var(--text-h)' }
 
+// What used to be the ROBOT panel, minus everything the robot card on the map now shows
+// (relocalize, pause, cancel, status). Starting a route, and following it, live here.
 export function C2RobotStatusWidget({
-  robot, live, mapName,
-  driveBlocker, target, plan, goBlocker, routeNote, busy, result,
-  reloc, posePin, onStartReloc, onCancelReloc, onSendReloc,
+  robot, live, robotMap,
+  driveBlocker, target, plan, goBlocker, routeNote, busy,
   toBlocker, routeMode, activePlan, onGoTo, onGoThrough, onCancelRoute, onSendRoute,
   walking, navPathShown, hasHome, onReturnHome, standBlocker,
-  onPause, onCancelGoal,
-  scanHint, planLog,
+  planLog, segmentText, onSelectStop,
 }) {
   const hint = LOCALIZATION_HINTS[robot?.localization]
-  const navigating = robot?.navState === 'navigating'
-  const poseYaw = effectiveYaw(posePin)
+  const stops = activePlan?.stops ?? walking?.stops ?? []
 
   return (
     <div className="panel flex flex-col h-full" style={{ overflow: 'hidden' }}>
       <div className="panel-header">
-        <span>ROBOT</span>
+        <span>ROUTE</span>
         <span
           className="val-mono"
           style={{ fontSize: 10, color: live ? 'var(--success, #4ADE80)' : 'var(--text-dim)' }}
@@ -100,50 +65,19 @@ export function C2RobotStatusWidget({
         </span>
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div style={subHeadStyle}>Control</div>
 
+        {live && hint && (
+          <div style={{ fontSize: 11, lineHeight: 1.5, color: TONE_COLOR[hint.tone] }}>
+            {hint.text}
+          </div>
+        )}
+        {live && robot?.paused && (
+          <div className="flash-warn" style={{ fontSize: 11, lineHeight: 1.5, color: '#EF4444' }}>
+            ⚠ PAUSED — routes will not move the robot. Press Unpause on the robot card.
+          </div>
+        )}
         {driveBlocker && (
           <div style={{ fontSize: 11, color: '#FBBF24', lineHeight: 1.5 }}>{driveBlocker}</div>
-        )}
-
-        {reloc === 'idle' ? (
-          <button
-            className="btn-icon"
-            style={btn}
-            disabled={Boolean(driveBlocker) || busy || robot?.localization === 'pending'}
-            onClick={onStartReloc}
-            title="Tell the robot roughly where it is on this map"
-          >
-            {robot?.localization === 'pending' ? 'Converging…' : '⌖ Relocalize'}
-          </button>
-        ) : (
-          <div
-            style={{
-              display: 'flex', flexDirection: 'column', gap: 6, padding: 8, borderRadius: 4,
-              border: '1px solid var(--robot-marker, #22D3EE)',
-            }}
-          >
-            <div className="val-mono" style={{ fontSize: 11, color: 'var(--text-h)' }}>
-              {posePin
-                ? `x ${formatMetres(posePin.x)}  y ${formatMetres(posePin.y)} m · `
-                  + (poseYaw != null ? `${degFromYaw(poseYaw)}°` : 'heading not set (sends 0°)')
-                : 'Click the map where the robot is.'}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--text-dim)', lineHeight: 1.5 }}>
-              {posePin
-                ? 'Drag the ring to the way the robot faces, then send.'
-                : 'Esc to cancel.'}
-              {robot?.currentMap && robot.currentMap !== mapName && ` Also loads ${mapName} on the robot.`}
-            </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button className="btn-icon" style={{ ...btn, flex: 1 }} disabled={reloc === 'sending'} onClick={onCancelReloc}>
-                Cancel
-              </button>
-              <button className="btn-icon" style={{ ...primaryBtn, flex: 2 }} disabled={!posePin || busy} onClick={onSendReloc}>
-                {reloc === 'sending' ? <><Spinner />Relocalizing…</> : 'Send pose ▶'}
-              </button>
-            </div>
-          </div>
         )}
 
         {walking && !activePlan && (
@@ -157,6 +91,16 @@ export function C2RobotStatusWidget({
             <div className="val-mono" style={{ fontSize: 11, color: 'var(--text-h)' }}>
               Walking to {walking.name}
             </div>
+            {robot?.navState === 'map_switching' && (
+              <div className="val-mono" style={{ fontSize: 10, color: TONE_COLOR.busy, lineHeight: 1.5 }}>
+                <Spinner />Switching map: loading the next map and relocalizing. Cancel waits until this ends.
+              </div>
+            )}
+            {segmentText && (
+              <div className="val-mono" style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                segment {segmentText}
+              </div>
+            )}
             <div className="val-mono" style={{ fontSize: 10, color: 'var(--text-dim)', lineHeight: 1.5 }}>
               {walking.mode === 'to'
                 ? (walking.reached ? 'Arrived.'
@@ -193,7 +137,7 @@ export function C2RobotStatusWidget({
                 Cancel
               </button>
               <button className="btn-icon" style={{ ...primaryBtn, flex: 2 }} disabled={busy || Boolean(standBlocker)} onClick={onSendRoute}>
-                Send ▶
+                Review &amp; send ▶
               </button>
             </div>
           </div>
@@ -260,32 +204,47 @@ export function C2RobotStatusWidget({
           <div style={{ fontSize: 10, color: '#FBBF24', lineHeight: 1.5 }}>{routeNote}</div>
         )}
 
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button className="btn-icon" style={{ ...btn, flex: 1 }} disabled={!live} onClick={onPause}>
-            {robot?.paused ? '▶ Unpause' : '⏸ Pause'}
-          </button>
-          <button
-            className="btn-icon"
-            style={{ ...btn, flex: 1, ...(navigating && { borderColor: '#DC2626', color: '#DC2626' }) }}
-            onClick={onCancelGoal}
-            title="Stop the route that is running"
-          >
-            ✕ Cancel route
-          </button>
-        </div>
-
-        {result && (
-          <div
-            className="val-mono"
-            style={{ fontSize: 11, lineHeight: 1.5, color: result.ok ? TONE_COLOR.ok : TONE_COLOR.bad, wordBreak: 'break-word' }}
-          >
-            {result.ok ? '✓ ' : '✕ '}{result.message}
-          </div>
+        {stops.length > 0 && (
+          <>
+            <div style={{ borderTop: '1px solid var(--border)' }} />
+            <div style={subHeadStyle}>{walking && !activePlan ? 'Running' : 'Preview'} · {stops.length} stops</div>
+            <div>
+              {stops.map((p, i) => {
+                const newMap = i === 0 || stops[i - 1].map !== p.map
+                const done = walking && !activePlan && i < walking.reached
+                return (
+                  <Fragment key={`${p.map}:${p.id}:${i}`}>
+                    {newMap && (
+                      <div
+                        className="val-mono"
+                        style={{
+                          fontSize: 10, color: 'var(--text-dim)', marginTop: i ? 6 : 0, padding: '2px 4px',
+                          borderBottom: '1px solid var(--border)',
+                        }}
+                      >
+                        {p.map}{p.map === robotMap ? ' · robot here' : ''}
+                      </div>
+                    )}
+                    <div
+                      onClick={() => onSelectStop?.(p)}
+                      className="val-mono"
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 4px',
+                        cursor: 'pointer', color: 'var(--text)', opacity: done ? 0.45 : 1,
+                        overflow: 'hidden', whiteSpace: 'nowrap',
+                      }}
+                    >
+                      <span style={{ width: 18, textAlign: 'right' }}>{i + 1}.</span>
+                      <C2PinGlyph type={p.type} size={12} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</span>
+                      <span style={{ color: 'var(--text-dim)' }}>{p.x.toFixed(1)}, {p.y.toFixed(1)}</span>
+                    </div>
+                  </Fragment>
+                )
+              })}
+            </div>
+          </>
         )}
-
-        <div className="val-mono" style={{ fontSize: 10, color: scanHint ? 'var(--text-dim)' : TONE_COLOR.ok }}>
-          lidar on map: {scanHint ?? 'shown in red'}
-        </div>
 
         <div style={{ borderTop: '1px solid var(--border)' }} />
         <div style={subHeadStyle}>Route log</div>
@@ -299,51 +258,6 @@ export function C2RobotStatusWidget({
           ))
         )}
 
-        <div style={{ borderTop: '1px solid var(--border)' }} />
-        <div style={subHeadStyle}>Status</div>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
-            columnGap: 16,
-            rowGap: 8,
-          }}
-        >
-          <Stat label="MAP ON CANVAS" value={mapName} />
-          <Stat label="ROBOT'S MAP" value={robot?.currentMap} />
-          <Stat
-            label="POSITION"
-            value={robot?.position
-              ? `x ${formatMetres(robot.position.x)}  y ${formatMetres(robot.position.y)} m`
-              : ''}
-          />
-          <Stat label="FACING" value={robot?.yaw != null ? `${degFromYaw(robot.yaw)}°` : ''} />
-          <Stat
-            label="BATTERY"
-            value={robot?.battery != null ? `${robot.battery}%` : ''}
-            color={batteryColor(robot?.battery)}
-          />
-          <Stat label="MODE" value={robot?.mode} />
-          <Stat label="LOCALIZATION" value={robot?.localization} />
-          <Stat label="NAV STATE" value={robot?.navState} />
-          <Stat label="ROUTE" value={robot?.navplanId ? String(robot.navplanId) : ''} />
-          <Stat
-            label="ROUTE STATUS"
-            value={robot?.navplanStatus}
-            color={TONE_COLOR[PLAN_TONE[robot?.navplanStatus]]}
-          />
-        </div>
-
-        {live && hint && (
-          <div style={{ fontSize: 11, lineHeight: 1.5, color: TONE_COLOR[hint.tone] }}>
-            {hint.text}
-          </div>
-        )}
-        {live && robot?.paused && (
-          <div className="flash-warn" style={{ fontSize: 11, lineHeight: 1.5, color: '#EF4444' }}>
-            ⚠ PAUSED — routes will not move the robot. Press Unpause above.
-          </div>
-        )}
       </div>
     </div>
   )

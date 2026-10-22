@@ -1,9 +1,15 @@
 import { useEffect, useState } from 'react'
 import { camOfSnapshot, formatPoiTime, map2dSnapshotUrl, POI_CAMS } from '../../lib/poi'
 
-const camTitle = (f) => POI_CAMS.find((c) => c.key === camOfSnapshot(f))?.title ?? f
+const camTitle = (f) => POI_CAMS.find((c) => c.key === camOfSnapshot(f) || f.includes(`_${c.key}.`))?.title ?? f
+// Mapping snapshots live with the 2D map; photos C2 took of a route's own POI carry their
+// own URLs (point.poi.urls).
+const photoUrl = (point, mapName, f) => point.poi.urls?.[f] ?? map2dSnapshotUrl(mapName, f)
 
+// Without onOpen the card is a view-only preview: it cannot be clicked or focused, and the
+// pointer passes through it to the map, so it goes when the pointer leaves the point.
 export function C2PoiHoverCard({ point, at, mapName, bounds, onOpen, onPointerEnter, onPointerLeave }) {
+  const clickable = Boolean(onOpen)
   const width = 300
   const left = at.x + 18 + width > bounds.width ? at.x - 18 - width : at.x + 18
   const top = Math.max(8, Math.min(at.y - 20, bounds.height - 230))
@@ -11,15 +17,18 @@ export function C2PoiHoverCard({ point, at, mapName, bounds, onOpen, onPointerEn
   return (
     <div
       className="panel"
-      role="button"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }}
-      onPointerEnter={onPointerEnter}
-      onPointerLeave={onPointerLeave}
-      title="Open the photos"
+      {...(clickable && {
+        role: 'button',
+        tabIndex: 0,
+        onClick: onOpen,
+        onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } },
+        onPointerEnter,
+        onPointerLeave,
+        title: 'Open the photos',
+      })}
       style={{
-        position: 'absolute', left, top, width, padding: 8, zIndex: 7, cursor: 'pointer',
+        position: 'absolute', left, top, width, padding: 8, zIndex: 7,
+        cursor: clickable ? 'pointer' : 'default', pointerEvents: clickable ? 'auto' : 'none',
         display: 'flex', flexDirection: 'column', gap: 6, boxShadow: '0 6px 18px rgba(0,0,0,0.45)',
       }}
     >
@@ -38,7 +47,7 @@ export function C2PoiHoverCard({ point, at, mapName, bounds, onOpen, onPointerEn
           {snapshots.map((f) => (
             <img
               key={f}
-              src={map2dSnapshotUrl(mapName, f)}
+              src={photoUrl(point, mapName, f)}
               alt={camTitle(f)}
               style={{ flex: 1, minWidth: 0, height: 120, objectFit: 'cover', borderRadius: 3, background: '#000' }}
             />
@@ -47,7 +56,7 @@ export function C2PoiHoverCard({ point, at, mapName, bounds, onOpen, onPointerEn
       ) : (
         <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>No photos.</div>
       )}
-      <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>Click this card to open the photos</div>
+      {clickable && <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>Click this card to open the photos</div>}
     </div>
   )
 }
@@ -103,7 +112,7 @@ export function C2PoiViewer({ point, mapName, onClose }) {
                   title={fullSize ? 'Click to fit' : 'Click for full size'}
                 >
                   <img
-                    src={map2dSnapshotUrl(mapName, shown)}
+                    src={photoUrl(point, mapName, shown)}
                     alt={camTitle(shown)}
                     style={fullSize
                       ? { display: 'block', maxWidth: 'none' }
@@ -120,7 +129,7 @@ export function C2PoiViewer({ point, mapName, onClose }) {
                         borderRadius: 4, background: '#000', cursor: 'pointer', display: 'flex', flexDirection: 'column',
                       }}
                     >
-                      <img src={map2dSnapshotUrl(mapName, f)} alt={camTitle(f)} style={{ height: 64, width: 96, objectFit: 'cover', display: 'block' }} />
+                      <img src={photoUrl(point, mapName, f)} alt={camTitle(f)} style={{ height: 64, width: 96, objectFit: 'cover', display: 'block' }} />
                       <span className="val-mono" style={{ fontSize: 9, color: 'var(--text-dim)', padding: '2px 0' }}>{camTitle(f)}</span>
                     </button>
                   ))}

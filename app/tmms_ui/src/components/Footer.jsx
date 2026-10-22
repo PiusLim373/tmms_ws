@@ -67,6 +67,17 @@ export function Footer({ connected, page, onNavigate }) {
           🧭 Navigation
         </button>
         <button
+          onClick={() => onNavigate('path_editor')}
+          className="btn-icon"
+          style={{
+            padding: '8px 16px',
+            fontSize: 12,
+            ...(page === 'path_editor' && { borderColor: 'var(--accent-bright)' }),
+          }}
+        >
+          ✏️ Path Editor
+        </button>
+        <button
           onClick={() => onNavigate('c2')}
           className="btn-icon"
           style={{

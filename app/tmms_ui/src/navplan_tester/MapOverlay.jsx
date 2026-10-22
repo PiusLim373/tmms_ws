@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useThemeTick } from '../hooks/useThemeTick'
-import { worldToPixel } from '../lib/c2Coords'
+import { worldToScreen } from '../lib/c2Coords'
 
 // Deliberately NOT a theme token. The accent colours are tuned to sit quietly inside the UI,
 // which is the opposite of what live sensor data wants -- and the map underneath is greyscale
@@ -35,10 +35,8 @@ export function MapOverlay({ info, view, size, robot, waypoints, scan, ghost }) 
     const ghostColor = css.getPropertyValue('--pin-home').trim() || '#F59E0B'
     const linkColor = css.getPropertyValue('--pin-action').trim() || '#DC2626'
 
-    const toScreen = (wx, wy) => {
-      const p = worldToPixel(wx, wy, info)
-      return { x: view.x + p.x * view.scale, y: view.y + p.y * view.scale }
-    }
+    // Through worldToScreen, so a map turned on screen (view.rot, C2) turns the scan too.
+    const toScreen = (wx, wy) => worldToScreen(wx, wy, info, view)
 
     // -- route links -------------------------------------------------------
     // Derived from the ordered list every draw, so deleting a middle waypoint relinks its

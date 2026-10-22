@@ -25,15 +25,59 @@ export function degFromYaw(yaw) {
   return Math.round(((yaw * 180) / Math.PI + 360) % 360)
 }
 
-export function fitView(info, size, margin = 0.94) {
-  if (!info || !size.width || !size.height) return { scale: 1, x: 0, y: 0 }
-  const scale = Math.min(size.width / info.width, size.height / info.height) * margin
-  return {
-    scale,
-    x: (size.width - info.width * scale) / 2,
-    y: (size.height - info.height * scale) / 2,
-  }
+// A view is { scale, x, y, rot }: where map pixel (0, 0) lands on screen, screen px per map
+// px, and how far the whole map is turned on screen (radians, clockwise; missing = 0). The
+// turn is display only -- world coordinates, and everything sent to the robot, are unchanged.
+export function pixelToScreen(px, py, view) {
+  const r = view.rot ?? 0
+  const c = Math.cos(r)
+  const s = Math.sin(r)
+  return { x: view.x + view.scale * (px * c - py * s), y: view.y + view.scale * (px * s + py * c) }
 }
+
+export function screenToPixel(sx, sy, view) {
+  const r = view.rot ?? 0
+  const c = Math.cos(r)
+  const s = Math.sin(r)
+  const dx = (sx - view.x) / view.scale
+  const dy = (sy - view.y) / view.scale
+  return { x: dx * c + dy * s, y: -dx * s + dy * c }
+}
+
+export function worldToScreen(wx, wy, info, view) {
+  const p = worldToPixel(wx, wy, info)
+  return pixelToScreen(p.x, p.y, view)
+}
+
+export function screenToWorld(sx, sy, info, view) {
+  const p = screenToPixel(sx, sy, view)
+  return pixelToWorld(p.x, p.y, info)
+}
+
+// The whole map, turned by `rot`, fitted and centred in `size`.
+export function fitView(info, size, margin = 0.94, rot = 0) {
+  if (!info || !size.width || !size.height) return { scale: 1, x: 0, y: 0, rot }
+  const c = Math.abs(Math.cos(rot))
+  const s = Math.abs(Math.sin(rot))
+  const bw = info.width * c + info.height * s
+  const bh = info.width * s + info.height * c
+  const scale = Math.min(size.width / bw, size.height / bh) * margin
+  return centreOn({ scale, x: 0, y: 0, rot }, info.width / 2, info.height / 2, size)
+}
+
+// The same view with map pixel (px, py) moved to the middle of `size`.
+export function centreOn(view, px, py, size) {
+  const at = pixelToScreen(px, py, { ...view, x: 0, y: 0 })
+  return { ...view, x: size.width / 2 - at.x, y: size.height / 2 - at.y }
+}
+
+// The view turned to `rot`, about whatever is in the middle of the screen.
+export function rotateView(view, rot, size) {
+  const mid = screenToPixel(size.width / 2, size.height / 2, view)
+  return centreOn({ ...view, rot }, mid.x, mid.y, size)
+}
+
+export const degToRad = (d) => ((Number(d) || 0) * Math.PI) / 180
 
 export function quaternionToYaw(q) {
   if (!q) return null

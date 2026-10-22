@@ -1,4 +1,5 @@
 import { worldToPixel } from './c2Coords'
+import { displayName, rotationTurn } from './c2Pins'
 
 export const CLEARANCE_M = 0.35
 const FREE_MIN = 217
@@ -207,32 +208,259 @@ export function linksFromKeys(points, keys, grid, info) {
 
 const ROBOT_LEG = { maxRatio: 3, marginM: 3 }
 
-export function planRoute({ points, links, robot, targetId, grid, info }) {
-  const target = points.find((p) => p.id === targetId)
-  if (!target) return { ok: false, reason: 'That point is not on this map.' }
-  if (!robot) return { ok: false, reason: 'The robot is not on this map. Relocalize it here first.' }
+// A pair counts only when both switches name each other, on different maps of the graph.
+// One side alone (an undone link, a deleted partner) reads as unlinked.
+export function partnerOf(pins, pin) {
+  if (pin?.type !== 'map_switch' || !pin.pair) return null
+  const p = pins.find((q) => q.id === pin.pair)
+  return p?.type === 'map_switch' && p.pair === pin.id && p.map !== pin.map ? p : null
+}
+
+// Switch pairs closer together than this give too short a line to read a turn from.
+export const MIN_PAIR_SPREAD_M = 1.0
+
+// How map `to` is turned from map `from`, worked out from the switch pairs linked between
+// them: the line from one switch to another has to point the same real way on both maps, so
+// its direction on `to` minus its direction on `from` is the turn. Least squares over every
+// pair, about their centres. null with fewer than two pairs, or pairs too close together.
+// `mismatchM` is the worst difference between how far apart two switches are on one map and
+// on the other: switches at the same spots are the same distance apart on both, so a big one
+// means a switch is not at the same spot on both maps.
+export function pinTurn(pins, from, to) {
+  const pairs = []
+  for (const p of pins) {
+    if (p.map !== from) continue
+    const o = partnerOf(pins, p)
+    if (o?.map === to) pairs.push([p, o])
+  }
+  if (pairs.length < 2) return null
+  const mean = (pts) => ({
+    x: pts.reduce((t, q) => t + q.x, 0) / pts.length,
+    y: pts.reduce((t, q) => t + q.y, 0) / pts.length,
+  })
+  const ca = mean(pairs.map(([a]) => a))
+  const cb = mean(pairs.map(([, b]) => b))
+  let dot = 0
+  let cross = 0
+  let spread = 0
+  for (const [a, b] of pairs) {
+    const ax = a.x - ca.x
+    const ay = a.y - ca.y
+    const bx = b.x - cb.x
+    const by = b.y - cb.y
+    dot += ax * bx + ay * by
+    cross += ax * by - ay * bx
+    spread = Math.max(spread, Math.hypot(ax, ay))
+  }
+  if (spread * 2 < MIN_PAIR_SPREAD_M) return null
+  let worst = 0
+  for (let i = 0; i < pairs.length; i++) {
+    for (let j = i + 1; j < pairs.length; j++) {
+      const da = Math.hypot(pairs[i][0].x - pairs[j][0].x, pairs[i][0].y - pairs[j][0].y)
+      const db = Math.hypot(pairs[i][1].x - pairs[j][1].x, pairs[i][1].y - pairs[j][1].y)
+      worst = Math.max(worst, Math.abs(da - db))
+    }
+  }
+  return { turn: Math.atan2(cross, dot), pairs: pairs.length, mismatchM: worst, ca, cb }
+}
+
+// Where map `from` sits on map `to`: a point x on `from` is at R(turn)·x + (tx, ty) on `to`.
+// Best source first: walls matched in the Path Editor (`alignments`, see c2Align), then two
+// or more linked switch pairs (pinTurn), then a single pair and its heading. null if the two
+// maps share no linked pair at all. `source` says which one it came from.
+export function mapToMap(pins, from, to, alignments = {}) {
+  const saved = savedFrame(alignments, from, to)
+  if (saved) return { ...saved, mismatchM: 0, source: 'walls' }
+  const t = pinTurn(pins, to, from)
+  if (t) {
+    // pinTurn(to -> from): x_from = R(t.turn)(x_to - ca) + cb, so x_to = R(-t.turn)(x_from - cb) + ca.
+    const turn = -t.turn
+    const c = Math.cos(turn)
+    const s = Math.sin(turn)
+    return { turn, tx: t.ca.x - (c * t.cb.x - s * t.cb.y), ty: t.ca.y - (s * t.cb.x + c * t.cb.y), mismatchM: t.mismatchM, source: 'pins' }
+  }
+  const pair = switchPair(pins, from, to)
+  if (!pair) return null
+  // One pair: same spot on both maps, and its heading points the same real way on both.
+  const turn = (pair.b.yaw ?? 0) - (pair.a.yaw ?? 0)
+  const c = Math.cos(turn)
+  const s = Math.sin(turn)
+  return { turn, tx: pair.b.x - (c * pair.a.x - s * pair.a.y), ty: pair.b.y - (s * pair.a.x + c * pair.a.y), mismatchM: 0, source: 'pin' }
+}
+
+// A linked switch pair between two maps: `a` on `from`, `b` on `to`. The first one found.
+export function switchPair(pins, from, to) {
+  for (const p of pins) {
+    if (p.map !== from) continue
+    const o = partnerOf(pins, p)
+    if (o?.map === to) return { a: p, b: o }
+  }
+  return null
+}
+
+// A frame saved by wall matching, stored once per pair of maps as "from|to"; read either way.
+export function savedFrame(alignments, from, to) {
+  const f = alignments?.[`${from}|${to}`]
+  if (f) return { turn: f.turn, tx: f.tx, ty: f.ty }
+  const r = alignments?.[`${to}|${from}`]
+  if (!r) return null
+  const c = Math.cos(-r.turn)
+  const s = Math.sin(-r.turn)
+  return { turn: -r.turn, tx: -(c * r.tx - s * r.ty), ty: -(s * r.tx + c * r.ty) }
+}
+
+export function applyFrame(f, p) {
+  const c = Math.cos(f.turn)
+  const s = Math.sin(f.turn)
+  return { x: c * p.x - s * p.y + f.tx, y: s * p.x + c * p.y + f.ty }
+}
+
+// x -> a(b(x)): `b` first, then `a`.
+export function composeFrames(a, b) {
+  const t = applyFrame({ turn: a.turn, tx: 0, ty: 0 }, { x: b.tx, y: b.ty })
+  return { turn: a.turn + b.turn, tx: t.x + a.tx, ty: t.y + a.ty }
+}
+
+export function invertFrame(f) {
+  const t = applyFrame({ turn: -f.turn, tx: 0, ty: 0 }, { x: f.tx, y: f.ty })
+  return { turn: -f.turn, tx: -t.x, ty: -t.y }
+}
+
+// Every map reachable from `base` through linked switch pairs, with where it sits on `base`
+// (chained across maps) and how each step was found. `base` itself is the identity.
+export function framesOnto(pins, base, maps, alignments = {}) {
+  const out = new Map([[base, { turn: 0, tx: 0, ty: 0, mismatchM: 0, source: 'base', parent: null }]])
+  const queue = [base]
+  while (queue.length) {
+    const at = queue.shift()
+    for (const m of maps) {
+      if (out.has(m)) continue
+      const step = mapToMap(pins, m, at, alignments)
+      if (!step) continue
+      const onto = out.get(at)
+      const o = applyFrame(onto, { x: step.tx, y: step.ty })
+      out.set(m, {
+        turn: step.turn + onto.turn, tx: o.x, ty: o.y,
+        mismatchM: Math.max(step.mismatchM, onto.mismatchM), source: step.source, parent: at,
+      })
+      queue.push(m)
+    }
+  }
+  return out
+}
+
+// turnOf(from, to) for the whole graph: from matched walls or linked pins where they allow it
+// (mapToMap), otherwise from the ↻ angles.
+export function mapTurner(pins, rotations = {}, alignments = {}) {
+  const byAngle = rotationTurn(rotations)
+  const memo = new Map()
+  return (from, to) => {
+    const key = `${from}|${to}`
+    if (!memo.has(key)) {
+      const saved = savedFrame(alignments, from, to)
+      const t = saved ? null : pinTurn(pins, from, to)
+      memo.set(key, saved ? saved.turn : t ? t.turn : byAngle(from, to))
+    }
+    return memo.get(key)
+  }
+}
+
+// frameOf(from, to) for the whole graph: matched walls only, else null (callers then fall back
+// to the switch pins themselves).
+export function mapFramer(alignments = {}) {
+  return (from, to) => savedFrame(alignments, from, to)
+}
+
+// Names the missing link when no way reaches `goal`, from what the robot CAN reach (`dist`
+// finite): the destination itself unlinked, the map entered but not joined up to it, a Map
+// Switch towards it not joined to its map, or no switch pair towards its map at all.
+function whereItBreaks(nodes, adj, dist, entry, goal, pins) {
+  const fix = ' Fix it in the Path Editor.'
+  const short = (m) => m.replace(/^\d{6}_(flattened_)?/, '')
+  const reach = [...nodes.values()].filter((p) => dist.get(p.id) < Infinity)
+  const reachMaps = new Set(reach.map((p) => p.map))
+  const names = (list) => list.slice(0, 2).map((p) => p.name).join(' or ')
+
+  if ((adj.get(goal.id) ?? []).length === 0) {
+    return `${goal.name} on ${short(goal.map)} has no links. Link it to a nearby point.${fix}`
+  }
+  if (reachMaps.has(goal.map)) {
+    const there = reach.filter((p) => p.map === goal.map)
+    const arrivals = there.filter((p) => p.type === 'map_switch')
+    return `${goal.name} is not connected to ${names(arrivals.length ? arrivals : there)}, where the route `
+      + `${arrivals.length ? 'arrives on' : 'can get to on'} ${short(goal.map)}. Link the points in between.${fix}`
+  }
+  // Switches on maps the robot can reach that lead to a map it cannot, towards the goal first.
+  const exits = []
+  for (const p of nodes.values()) {
+    if (p.type !== 'map_switch' || !reachMaps.has(p.map)) continue
+    const o = partnerOf(pins, p)
+    if (!o || reachMaps.has(o.map)) continue
+    exits.push({ p, to: o.map, reached: dist.get(p.id) < Infinity })
+  }
+  exits.sort((a, b) => (b.to === goal.map) - (a.to === goal.map))
+  const stuck = exits.find((e) => !e.reached)
+  if (stuck) {
+    const onMap = reach.filter((q) => q.map === stuck.p.map)
+    // Links on its own map; the pair edge to its partner does not count.
+    const linked = (adj.get(stuck.p.id) ?? []).some(([v]) => nodes.get(v)?.map === stuck.p.map)
+    return `${stuck.p.name} on ${short(stuck.p.map)} (goes to ${short(stuck.to)}) `
+      + (linked ? `is not joined to the points the robot can reach there, such as ${names(onMap)}.`
+        : `has no links on ${short(stuck.p.map)}. Link it to ${names(onMap)}.`) + fix
+  }
+  const unpaired = [...nodes.values()].filter((p) => p.type === 'map_switch' && reachMaps.has(p.map) && !partnerOf(pins, p))
+  return `No Map Switch pair joins ${[...reachMaps].map(short).join(' or ')} to ${short(goal.map)}`
+    + (unpaired.length ? `. ${names(unpaired)} ${unpaired.length > 1 ? 'are' : 'is'} not linked to a partner yet.` : '.')
+    + fix
+}
+
+// Dijkstra over one graph spanning several maps. Links (always within one map) weigh their
+// length; a switch pair weighs nothing, so the robot changes map wherever the shortest way
+// goes. gridFor(map) gives { grid, info } for the robot's map, to walk it onto the graph.
+export function planRoute({ pins, links, robot, targetId, gridFor }) {
+  const nodes = new Map(pins.map((p) => [p.id, { ...p, name: displayName(p, pins) }]))
+  const goal = nodes.get(targetId)
+  if (!goal) return { ok: false, reason: 'That point is not in the route.' }
+  if (!robot) return { ok: false, reason: 'The robot is not localized on any map. Relocalize it first.' }
+
+  const here = [...nodes.values()].filter((p) => p.map === robot.map)
+  if (here.length === 0) {
+    return { ok: false, reason: `The robot is on ${robot.map}, which is not in this route. Relocalize it on one of the route's maps.` }
+  }
+  const robotGrid = gridFor(robot.map)
+  if (!robotGrid) return { ok: false, reason: `Still loading ${robot.map}, the map the robot is on.` }
 
   let entry = null
   let entryDist = Infinity
   let robotLeg = null
-  const byStraight = points
+  const byStraight = here
     .map((p) => [Math.hypot(p.x - robot.x, p.y - robot.y), p])
     .sort((u, v) => u[0] - v[0])
   for (const [straight, p] of byStraight) {
     if (straight >= entryDist) break
-    const way = wayBetween(robot, p, grid, info, ROBOT_LEG)
+    const way = wayBetween(robot, p, robotGrid.grid, robotGrid.info, ROBOT_LEG)
     if (way && way.len < entryDist) { entry = p; entryDist = way.len; robotLeg = way.path }
   }
   if (!entry) {
-    return { ok: false, reason: 'The robot cannot walk to any of the points from where it is. Add a Simple waypoint near the robot.' }
+    return { ok: false, reason: 'The robot cannot walk to any of the points from where it is. Add a Simple waypoint near the robot in the Path Editor.' }
   }
 
-  const adj = new Map(points.map((p) => [p.id, []]))
-  for (const l of links) {
-    adj.get(l.a)?.push([l.b, l.len])
-    adj.get(l.b)?.push([l.a, l.len])
+  const adj = new Map([...nodes.keys()].map((k) => [k, []]))
+  for (const lk of links) {
+    const [ia, ib] = lk.split('|')
+    const a = nodes.get(ia)
+    const b = nodes.get(ib)
+    if (!a || !b || a.map !== b.map) continue
+    const len = Math.hypot(b.x - a.x, b.y - a.y)
+    adj.get(a.id).push([b.id, len])
+    adj.get(b.id).push([a.id, len])
   }
-  const dist = new Map(points.map((p) => [p.id, Infinity]))
+  for (const p of pins) {
+    const other = partnerOf(pins, p)
+    if (other) adj.get(p.id).push([other.id, 0])
+  }
+
+  const dist = new Map([...nodes.keys()].map((k) => [k, Infinity]))
   const prev = new Map()
   const done = new Set()
   dist.set(entry.id, 0)
@@ -241,26 +469,22 @@ export function planRoute({ points, links, robot, targetId, grid, info }) {
     for (const [id, d] of dist) {
       if (!done.has(id) && d < Infinity && (u === null || d < dist.get(u))) u = id
     }
-    if (u === null || u === target.id) break
+    if (u === null || u === goal.id) break
     done.add(u)
     for (const [v, w] of adj.get(u)) {
       if (dist.get(u) + w < dist.get(v)) { dist.set(v, dist.get(u) + w); prev.set(v, u) }
     }
   }
 
-  if (dist.get(target.id) === Infinity) {
-    return {
-      ok: false,
-      entry,
-      reason: `No linked way from ${entry.name} to ${target.name}. `
-        + 'Link the points in between (Edit graph → Link points).',
-    }
+  if (dist.get(goal.id) === Infinity) {
+    return { ok: false, entry, reason: whereItBreaks(nodes, adj, dist, entry, goal, pins) }
   }
 
-  const byId = new Map(points.map((p) => [p.id, p]))
   const stops = []
-  for (let id = target.id; id !== undefined; id = prev.get(id)) stops.unshift(byId.get(id))
+  for (let k = goal.id; k !== undefined; k = prev.get(k)) stops.unshift(nodes.get(k))
   const legs = []
-  for (let k = 1; k < stops.length; k++) legs.push([stops[k - 1], stops[k]])
-  return { ok: true, stops, entry, lengthM: entryDist + dist.get(target.id), robotLeg, legs }
+  for (let k = 1; k < stops.length; k++) {
+    if (stops[k - 1].map === stops[k].map) legs.push([stops[k - 1], stops[k]])
+  }
+  return { ok: true, stops, entry, lengthM: entryDist + dist.get(goal.id), robotLeg, legs }
 }

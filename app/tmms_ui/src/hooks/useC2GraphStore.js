@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { listGraphs, saveGraph } from '../lib/c2Store'
+import { listGraphs, listRoutePhotos, saveGraph } from '../lib/c2Store'
+import { normalizeGraph } from '../lib/c2Pins'
 
 const DEBOUNCE_MS = 600
 const RETRY_MS = 3000
@@ -23,8 +24,9 @@ export function useC2GraphStore() {
     let timer = null
     const attempt = () => {
       listGraphs()
-        .then((stored) => {
+        .then((raw) => {
           if (stopped) return
+          const stored = raw.map(normalizeGraph)
           setGraphs((prev) => [...stored, ...prev.filter((g) => !stored.some((s) => s.id === g.id))])
           setStatus(dirtyRef.current.size ? 'saving' : 'saved')
           setLoaded(true)
@@ -102,4 +104,15 @@ export function useC2GraphStore() {
   }, [])
 
   return { graphs, updateGraphs, status }
+}
+
+// Photos C2 has taken of one route's own POIs: { pin_x: { takenAt, snapshots } }.
+export function useRoutePhotos(routeId) {
+  const [photos, setPhotos] = useState({})
+  const reload = useCallback(() => {
+    if (!routeId) { setPhotos({}); return }
+    listRoutePhotos(routeId).then(setPhotos).catch(() => setPhotos({}))
+  }, [routeId])
+  useEffect(reload, [reload])
+  return { photos, reload }
 }

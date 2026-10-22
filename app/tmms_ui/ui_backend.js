@@ -922,6 +922,71 @@ app.post('/api/system/reboot/:target', (req, res) => {
   proxyToRebootManager(res, `/reboot/${target}`, { method: 'POST' })
 })
 
+// ---------------------------------------------------------------------------
+// Photos of the Points of Interest placed in the Path Editor, taken by C2 when the robot gets
+// there -- the same way as the mapping POI snapshots above: one frame per camera, uploaded as
+// multipart, kept as files named <pin>_<cam>.<ext>. A new set replaces the old one.
+//   <C2_PHOTO_DIR>/<route id>/<pin id>_<cam>.<ext>
+// Not under /api/c2: that prefix is proxied to c2_backend as JSON.
+
+const C2_PHOTO_DIR = process.env.TMMS_C2_PHOTOS_DIR
+  || path.join(os.homedir(), '.htxgrrt', 'c2_photos')
+const ROUTE_ID_RE = /^g_[a-z0-9]{1,32}$/
+const ROUTE_PIN_RE = /^pin_[a-z0-9_]{1,64}$/
+const ROUTE_PHOTO_RE = /^pin_[a-z0-9_]{1,64}_(topdown|wrist|thirdperson)\.(jpg|png)$/
+const routePhotoDir = (route) => path.join(C2_PHOTO_DIR, route)
+
+// Every photo of a route, by pin: { pin_x: { takenAt, snapshots: [file, ...] } }.
+app.get('/api/route-photos/:route', (req, res) => {
+  const { route } = req.params
+  if (!ROUTE_ID_RE.test(route)) return res.status(400).end()
+  const dir = routePhotoDir(route)
+  const out = {}
+  if (fs.existsSync(dir)) {
+    for (const file of fs.readdirSync(dir)) {
+      if (!ROUTE_PHOTO_RE.test(file)) continue
+      const pin = file.replace(/_(topdown|wrist|thirdperson)\.\w+$/, '')
+      const taken = fs.statSync(path.join(dir, file)).mtime.toISOString()
+      const entry = (out[pin] ??= { takenAt: taken, snapshots: [] })
+      entry.snapshots.push(file)
+      if (taken > entry.takenAt) entry.takenAt = taken
+    }
+  }
+  res.json(out)
+})
+
+app.post('/api/route-photos/:route/:pin', poiUpload.fields(SNAPSHOT_CAMS.map((name) => ({ name, maxCount: 1 }))),
+  (req, res) => {
+    const { route, pin } = req.params
+    if (!ROUTE_ID_RE.test(route) || !ROUTE_PIN_RE.test(pin)) return res.status(400).end()
+    const files = SNAPSHOT_CAMS.map((cam) => [cam, req.files?.[cam]?.[0]]).filter(([, f]) => f)
+    if (!files.length) return res.status(400).json({ error: 'no photos uploaded' })
+    const bad = files.find(([, f]) => !SNAPSHOT_EXT[f.mimetype])
+    if (bad) return res.status(400).json({ error: `${bad[0]} photo must be a JPEG or PNG` })
+
+    const dir = routePhotoDir(route)
+    fs.mkdirSync(dir, { recursive: true })
+    // Replaces: whatever this pin had before goes, every camera.
+    for (const file of fs.readdirSync(dir)) {
+      if (file.startsWith(`${pin}_`) && ROUTE_PHOTO_RE.test(file)) fs.rmSync(path.join(dir, file), { force: true })
+    }
+    const snapshots = files.map(([cam, f]) => {
+      const file = `${pin}_${cam}.${SNAPSHOT_EXT[f.mimetype]}`
+      fs.writeFileSync(path.join(dir, file), f.buffer)
+      return file
+    })
+    res.json({ pin, takenAt: new Date().toISOString(), snapshots })
+  })
+
+app.get('/api/route-photos/:route/file/:file', (req, res) => {
+  const { route, file } = req.params
+  if (!ROUTE_ID_RE.test(route) || !ROUTE_PHOTO_RE.test(file)) return res.status(400).end()
+  if (!fs.existsSync(path.join(routePhotoDir(route), file))) {
+    return res.status(404).json({ error: 'photo not found', route, file })
+  }
+  res.sendFile(file, { root: routePhotoDir(route) })
+})
+
 const C2_BACKEND_URL = process.env.TMMS_C2_URL || 'http://127.0.0.1:3002'
 
 app.use('/api/c2', async (req, res) => {

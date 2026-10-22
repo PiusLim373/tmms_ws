@@ -12,6 +12,7 @@ import { ResizeHandle } from './components/ui/ResizeHandle'
 import { RecordingsPage } from './components/RecordingsPage'
 import { MappingPage } from './components/MappingPage'
 import { NavigationPage } from './components/NavigationPage'
+import { PathEditorPage } from './components/PathEditorPage'
 import { C2Page } from './components/C2Page'
 
 export default function App() {
@@ -162,7 +163,8 @@ export default function App() {
 
         {page === 'navigation' && <NavigationPage onNavigate={setPage} status={status} />}
 
-        {page === 'c2' && <C2Page />}
+        {page === 'path_editor' && <PathEditorPage />}
+        {page === 'c2' && <C2Page heldKeys={heldKeys} isPaused={isPaused} />}
       </div>
 
       {/* ── Footer (40px) ── */}

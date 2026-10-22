@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useThemeTick } from '../../hooks/useThemeTick'
-import { pixelToWorld, worldToPixel } from '../../lib/c2Coords'
+import { screenToWorld, worldToScreen } from '../../lib/c2Coords'
 import { displayName, displayNumber, effectiveYaw, HEADING_TYPES } from '../../lib/c2Pins'
 
 const MIN_ZOOM = 0.05
@@ -102,15 +102,10 @@ export function C2MapCanvas({
     return () => ro.disconnect()
   }, [onSizeChange])
 
-  const toScreen = useCallback((wx, wy) => {
-    const p = worldToPixel(wx, wy, info)
-    return { x: view.x + p.x * view.scale, y: view.y + p.y * view.scale }
-  }, [info, view])
-  const toWorld = useCallback((sx, sy) => {
-    const gx = (sx - view.x) / view.scale
-    const gy = (sy - view.y) / view.scale
-    return pixelToWorld(gx, gy, info)
-  }, [info, view])
+  const toScreen = useCallback((wx, wy) => worldToScreen(wx, wy, info, view), [info, view])
+  const toWorld = useCallback((sx, sy) => screenToWorld(sx, sy, info, view), [info, view])
+  // The map can be turned on screen (view.rot); a world heading is drawn turned with it.
+  const rot = view.rot ?? 0
   const localPoint = (e) => {
     const rect = canvasRef.current.getBoundingClientRect()
     return { x: e.clientX - rect.left, y: e.clientY - rect.top }
@@ -122,7 +117,7 @@ export function C2MapCanvas({
     const selected = pins.find((p) => p.id === selectedId)
     if (editable && selected && HEADING_TYPES.has(selected.type)) {
       const c = toScreen(selected.x, selected.y)
-      const yaw = effectiveYaw(selected) ?? 0
+      const yaw = (effectiveYaw(selected) ?? 0) - rot
       const hx = c.x + Math.cos(-yaw) * HANDLE_ORBIT_PX
       const hy = c.y + Math.sin(-yaw) * HANDLE_ORBIT_PX
       if (Math.hypot(pt.x - hx, pt.y - hy) <= HANDLE_HIT_PX) return { kind: 'handle', id: selected.id }
@@ -141,7 +136,7 @@ export function C2MapCanvas({
     }
 
     return null
-  }, [info, pins, selectedId, editable, toScreen])
+  }, [info, pins, selectedId, editable, toScreen, rot])
   function onPointerDown(e) {
     if (!info) return
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -189,7 +184,7 @@ export function C2MapCanvas({
       const pin = pins.find((p) => p.id === drag.id)
       if (pin) {
         const c = toScreen(pin.x, pin.y)
-        let yaw = Math.atan2(-(pt.y - c.y), pt.x - c.x)
+        let yaw = Math.atan2(-(pt.y - c.y), pt.x - c.x) + rot
 
         if (e.shiftKey) {
           const step = Math.PI / 12
@@ -241,7 +236,7 @@ export function C2MapCanvas({
       onViewChange((v) => {
         const next = clamp(v.scale * factor, MIN_ZOOM, MAX_ZOOM)
         if (next === v.scale) return v
-        return { scale: next, x: mx - (mx - v.x) * (next / v.scale), y: my - (my - v.y) * (next / v.scale) }
+        return { ...v, scale: next, x: mx - (mx - v.x) * (next / v.scale), y: my - (my - v.y) * (next / v.scale) }
       })
     }
     el.addEventListener('wheel', onWheel, { passive: false })
@@ -260,11 +255,15 @@ export function C2MapCanvas({
     const w = info.width * scale
     const h = info.height * scale
 
-    ctx.imageSmoothingEnabled = false
-    if (image) ctx.drawImage(image, ox, oy, w, h)
+    ctx.save()
+    ctx.translate(ox, oy)
+    ctx.rotate(rot)
+    ctx.imageSmoothingEnabled = rot !== 0
+    if (image) ctx.drawImage(image, 0, 0, w, h)
     ctx.strokeStyle = c.border
     ctx.lineWidth = 1
-    ctx.strokeRect(Math.round(ox) + 0.5, Math.round(oy) + 0.5, Math.round(w), Math.round(h))
+    ctx.strokeRect(0, 0, w, h)
+    ctx.restore()
 
     drawUnder?.(ctx, toScreen)
 
@@ -275,29 +274,33 @@ export function C2MapCanvas({
     const chipRects = new Map()
     for (const pin of ordered) {
       const s = toScreen(pin.x, pin.y)
-      if (pin.type === 'pose') drawRobot(ctx, s, pin.yaw ?? 0, scale / info.resolution, c.pose, robotImg, true)
+      if (pin.type === 'pose') drawRobot(ctx, s, (pin.yaw ?? 0) - rot, scale / info.resolution, c.pose, robotImg, true)
       const color = c[pin.type] ?? c.simple
       const selected = pin.id === selectedId
       const yaw = effectiveYaw(pin)
-      if (yaw != null) drawHeadingArrow(ctx, s, yaw, color)
+      if (yaw != null) drawHeadingArrow(ctx, s, yaw - rot, color)
       const fromMap = pin.source === 'mapping'
       const chip = drawPin(ctx, s, pin, color, selected,
-        fromMap ? 'P' : displayNumber(pin, ownPins), showNames || selected ? displayName(pin, ownPins) : null)
+        // A page drawing one map of a graph passes each pin's graph-wide name and number, so
+        // the map shows the same "POI3" as the lists; counted over this map's pins otherwise.
+        fromMap ? 'P' : pin.number ?? displayNumber(pin, ownPins),
+        showNames || selected ? pin.name ?? displayName(pin, ownPins) : null)
       if (fromMap) drawMappingRing(ctx, s)
+      if (pin.unpaired) drawUnpairedRing(ctx, s)
       if (chip) chipRects.set(pin.id, chip)
     }
     chipRectsRef.current = chipRects
 
     if (shownRobot?.position) {
-      drawRobot(ctx, toScreen(shownRobot.position.x, shownRobot.position.y), shownRobot.yaw ?? 0,
+      drawRobot(ctx, toScreen(shownRobot.position.x, shownRobot.position.y), (shownRobot.yaw ?? 0) - rot,
         scale / info.resolution, c.robot, robotImg, false)
     }
 
     const selected = pins.find((p) => p.id === selectedId)
     if (editable && selected && HEADING_TYPES.has(selected.type)) {
-      drawRotateHandle(ctx, toScreen(selected.x, selected.y), effectiveYaw(selected) ?? 0, c.accent)
+      drawRotateHandle(ctx, toScreen(selected.x, selected.y), (effectiveYaw(selected) ?? 0) - rot, c.accent)
     }
-  }, [size, info, image, view, pins, selectedId, shownRobot, robotImg, editable, toScreen, themeTick, drawUnder, showNames])
+  }, [size, info, image, view, rot, pins, selectedId, shownRobot, robotImg, editable, toScreen, themeTick, drawUnder, showNames])
 
   return (
     <div ref={wrapRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
@@ -323,6 +326,7 @@ function drawPin(ctx, s, pin, color, selected, number, name) {
   if (pin.type === 'pose') { drawPose(ctx, s, color, selected); return null }
   if (pin.type === 'simple') { drawSimple(ctx, s, color, selected); return null }
   if (pin.type === 'home') { drawHome(ctx, s, color, selected); return null }
+  if (pin.type === 'map_switch') return drawAction(ctx, s, color, selected, '⇄', name)
   return drawAction(ctx, s, color, selected, number, name)
 }
 
@@ -479,6 +483,18 @@ function drawMappingRing(ctx, s) {
   ctx.strokeStyle = '#FFFFFF'
   ctx.lineWidth = 1.6
   ctx.setLineDash([3, 3])
+  ctx.stroke()
+  ctx.restore()
+}
+
+// A map switch still waiting for its pair, as the navplan tester draws it.
+function drawUnpairedRing(ctx, s) {
+  ctx.save()
+  ctx.beginPath()
+  ctx.arc(s.x, s.y, 26, 0, Math.PI * 2)
+  ctx.strokeStyle = '#FBBF24'
+  ctx.lineWidth = 2.5
+  ctx.setLineDash([6, 4])
   ctx.stroke()
   ctx.restore()
 }
