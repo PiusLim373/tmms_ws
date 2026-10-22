@@ -90,6 +90,14 @@ export function reindexOrder(pins) {
   return pins.map((p) => (p.order === orderById.get(p.id) ? p : { ...p, order: orderById.get(p.id) }))
 }
 
+// A point through a frame { turn, tx, ty } (c2Graph's applyFrame; kept here to avoid an import
+// cycle).
+function through(f, p) {
+  const c = Math.cos(f.turn)
+  const s = Math.sin(f.turn)
+  return { x: c * p.x - s * p.y + f.tx, y: s * p.x + c * p.y + f.ty }
+}
+
 const WAYPOINT_TYPE = { action: 'poi', simple: 'simple', home: 'home' }
 
 const poseOf = (p) => ({
@@ -112,7 +120,8 @@ export function pairedYaw(yaw, from, to, turnOf) {
 // is its pose {map, x, y, yaw} on the old map; the crossing is the switch pair in `stops` it
 // stopped at. The pose keeps its offset from the switch, turned by the pair's turn, so a robot
 // that stopped 20 cm short or 10° off is placed 20 cm short and 10° off on the new map too.
-export function carryAcross(from, stops, turnOf = rotationTurn()) {
+// With `frameOf` (matched walls, c2Graph mapFramer) the pose goes straight through the frame.
+export function carryAcross(from, stops, turnOf = rotationTurn(), frameOf = () => null) {
   let best = null
   for (let k = 0; k + 1 < stops.length; k++) {
     const a = stops[k]
@@ -122,6 +131,8 @@ export function carryAcross(from, stops, turnOf = rotationTurn()) {
     if (!best || d < best.d) best = { a, b, d }
   }
   if (!best) return null
+  const frame = frameOf(best.a.map, best.b.map)
+  if (frame) return { map: best.b.map, ...through(frame, from), yaw: from.yaw + frame.turn }
   const turn = turnOf(best.a.map, best.b.map)
   const c = Math.cos(turn)
   const s = Math.sin(turn)
@@ -135,15 +146,19 @@ export function carryAcross(from, stops, turnOf = rotationTurn()) {
 // giving new_map_name / new_map_pose. A switch the route only passes by goes as simple.
 // The relocalize heading on the new map is worked out from the switch the robot stops at, so a
 // stale heading stored on the other side can never be sent.
-export function stopsToWaypoints(stops, turnOf = rotationTurn()) {
+// With `frameOf` (matched walls) the relocalize pose is the stop carried through the frame,
+// rather than the partner pin as placed by eye.
+export function stopsToWaypoints(stops, turnOf = rotationTurn(), frameOf = () => null) {
   const out = []
   for (let i = 0; i < stops.length; i++) {
     const s = stops[i]
     const next = stops[i + 1]
     const base = { id: out.length + 1, name: s.name ?? '', map_name: s.map, pose: poseOf(s) }
     if (s.type === 'map_switch' && next?.type === 'map_switch' && next.map !== s.map) {
-      const yaw = pairedYaw(effectiveYaw(s) ?? 0, s.map, next.map, turnOf)
-      out.push({ ...base, type: 'map_switch', new_map_name: next.map, new_map_pose: poseOf({ ...next, yaw, headingSet: true }) })
+      const frame = frameOf(s.map, next.map)
+      const yaw = frame ? (effectiveYaw(s) ?? 0) + frame.turn : pairedYaw(effectiveYaw(s) ?? 0, s.map, next.map, turnOf)
+      const at = frame ? through(frame, s) : next
+      out.push({ ...base, type: 'map_switch', new_map_name: next.map, new_map_pose: poseOf({ ...next, ...at, yaw, headingSet: true }) })
       i++
     } else {
       out.push({ ...base, type: WAYPOINT_TYPE[s.type] ?? 'simple' })

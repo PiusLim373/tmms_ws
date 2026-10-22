@@ -6,12 +6,16 @@ import { C2PointsWidget } from './widgets/C2PointsWidget'
 import { C2PinPopover } from './widgets/C2PinPopover'
 import { C2PoiHoverCard, C2PoiViewer } from './widgets/C2PoiPhotos'
 import { WarningModal } from './ui/WarningModal'
-import { degToRad, fitView, worldToScreen } from '../lib/c2Coords'
+import { degToRad, fitView, screenToWorld, worldToScreen } from '../lib/c2Coords'
 import {
   defaultName, displayName, displayNumber, makePin, pairedYaw, reindexOrder, routeOrder, withMapPoints,
 } from '../lib/c2Pins'
-import { linkKey, linksFromKeys, mapTurner, partnerOf, pinTurn } from '../lib/c2Graph'
-import { distToSegment, drawGraphLayer } from '../lib/c2GraphDraw'
+import {
+  applyFrame, composeFrames, framesOnto, invertFrame, linkKey, linksFromKeys, mapToMap, mapTurner, partnerOf, pinTurn,
+  savedFrame, switchPair,
+} from '../lib/c2Graph'
+import { MAX_STITCH_PIXELS, matchMaps, scoreFrame, stitchMaps, stitchSize } from '../lib/c2Align'
+import { combinedColor, distToSegment, drawGraphLayer, drawMapsOnto } from '../lib/c2GraphDraw'
 import { useC2GraphStore, useRoutePhotos } from '../hooks/useC2GraphStore'
 import { withRoutePhotos } from '../lib/c2Store'
 import { useC2Maps, useMapViews } from '../hooks/useC2Maps'
@@ -23,6 +27,7 @@ import '../navplan_tester/tester.css'
 
 const NONE = []
 const NO_ROTATIONS = {}
+const NO_ALIGNMENTS = {}
 const GRAPH_NAME_RE = /^[A-Za-z0-9_]+$/
 const HISTORY_LIMIT = 200
 const COALESCE_MS = 700
@@ -278,6 +283,8 @@ export function PathEditorPage() {
   const pins = entry?.pins ?? NONE
   const links = entry?.links ?? NONE
   const rotations = entry?.rotations ?? NO_ROTATIONS
+  // How maps sit on each other, found by matching walls in the combined view (c2Align).
+  const alignments = entry?.alignments ?? NO_ALIGNMENTS
   const [focusMap, setFocusMap] = useState(() => sessionOpen()?.focusMap ?? null)
   const [selectedId, setSelectedId] = useState(null)
   const [placingType, setPlacingType] = useState(null)
@@ -500,12 +507,12 @@ export function PathEditorPage() {
       return prev.map((p) => {
         if (p.id === id) return { ...p, yaw: yaw ?? 0, headingSet: yaw != null, headingDefault: false }
         if (other && p.id === other.id && yaw != null) {
-          return { ...p, yaw: pairedYaw(yaw, pin.map, p.map, mapTurner(prev, rotations)), headingSet: true, headingDefault: false }
+          return { ...p, yaw: pairedYaw(yaw, pin.map, p.map, mapTurner(prev, rotations, alignments)), headingSet: true, headingDefault: false }
         }
         return p
       })
     })
-  }, [mutate, rotations])
+  }, [mutate, rotations, alignments])
 
   // Same rules as the navplan tester's setType: a switch always has a heading, and leaving
   // the switch type drops its link.
@@ -553,14 +560,14 @@ export function PathEditorPage() {
       })
       // A second pair between the same two maps can change how they are turned (pinTurn), so
       // every pair between them follows its side on the lead's map again, not just this one.
-      const turnOf = mapTurner(linked, rotations)
+      const turnOf = mapTurner(linked, rotations, alignments)
       return linked.map((p) => {
         const o = p.map === follow.map ? partnerOf(linked, p) : null
         if (!o || o.map !== lead.map) return p
         return { ...p, yaw: pairedYaw(o.yaw ?? 0, o.map, p.map, turnOf), headingSet: true, headingDefault: false }
       })
     })
-  }, [mutate, rotations])
+  }, [mutate, rotations, alignments])
 
   const unpairSwitch = useCallback((id) => {
     mutate(null, (prev) => {
@@ -628,12 +635,17 @@ export function PathEditorPage() {
     const prev = pinsRef.current
     const turned = prev.map((p) => {
       const o = p.map === m ? partnerOf(prev, p) : null
-      return o ? { ...p, yaw: pairedYaw(o.yaw ?? 0, o.map, m, mapTurner(prev, next)), headingSet: true, headingDefault: false } : p
+      return o ? { ...p, yaw: pairedYaw(o.yaw ?? 0, o.map, m, mapTurner(prev, next, alignments)), headingSet: true, headingDefault: false } : p
     })
     pinsRef.current = turned
     editGraph(() => ({ rotations: next, pins: turned }))
-  }, [rotations, editGraph])
-  const shownMaps = useMemo(() => (focusMap ? [focusMap] : graphMaps), [focusMap, graphMaps])
+  }, [rotations, alignments, editGraph])
+  // Combined view: every map joined by two or more switch pairs, laid onto one base map. View
+  // only; nothing about the route, the maps or the robot changes.
+  const [combinedOn, setCombinedOn] = useState(null)
+  const combinedBase = combinedOn && graphMaps.includes(combinedOn) ? combinedOn : null
+  const shownMaps = useMemo(() => (combinedBase ? [combinedBase] : focusMap ? [focusMap] : graphMaps),
+    [combinedBase, focusMap, graphMaps])
   const rotOf = useCallback((m) => degToRad(rotations[m]), [rotations])
   // Fitted once, then kept where the user left it (useMapViews).
   const { views, sizes, viewSetter, sizeSetter } = useMapViews(entry?.id ?? null, shownMaps, byName, images, rotOf)
@@ -641,6 +653,7 @@ export function PathEditorPage() {
   const toScreenOn = useCallback((m, p) => worldToScreen(p.x, p.y, byName.get(m), views[m] ?? BLANK_VIEW), [byName, views])
 
   const expand = useCallback((m) => {
+    setCombinedOn(null)
     setFocusMap(m)
     setPlacingType(null)
     setLinkMode(false)
@@ -758,7 +771,7 @@ export function PathEditorPage() {
   }, [shownMaps, sizes])
 
   const pairLines = useMemo(() => {
-    if (focusMap) return NONE
+    if (focusMap || combinedBase) return NONE
     const out = []
     for (const p of pins) {
       const o = partners.get(p.id)
@@ -772,7 +785,259 @@ export function PathEditorPage() {
       out.push({ key: p.id, x1: ra.x + a.x, y1: ra.y + a.y, x2: rb.x + b.x, y2: rb.y + b.y })
     }
     return out
-  }, [focusMap, pins, partners, bodyRects, byName, toScreenOn])
+  }, [focusMap, combinedBase, pins, partners, bodyRects, byName, toScreenOn])
+
+  // -- combined view -------------------------------------------------------
+  const baseFrames = useMemo(() => (combinedBase ? framesOnto(pins, combinedBase, graphMaps, alignments) : null),
+    [combinedBase, pins, graphMaps, alignments])
+
+  // Placing a map by hand: `rel` is the draft of where it sits on the map it is joined to
+  // (map -> parent). While it is open it stands in for the saved one.
+  const [adjust, setAdjust] = useState(null)
+  useEffect(() => { setAdjust(null) }, [combinedBase, entry?.id])
+  const frames = useMemo(() => {
+    if (!baseFrames || !adjust) return baseFrames
+    const temp = { ...alignments }
+    delete temp[`${adjust.parent}|${adjust.map}`]
+    temp[`${adjust.map}|${adjust.parent}`] = adjust.rel
+    return framesOnto(pins, combinedBase, graphMaps, temp)
+  }, [baseFrames, adjust, alignments, pins, combinedBase, graphMaps])
+
+  // A move T (in base-map coordinates) applied to a map joined to `parent`, on top of `fromRel`.
+  const movedRelOn = useCallback((parent, T, fromRel) => {
+    const P = baseFrames.get(parent)
+    return composeFrames(invertFrame(P), composeFrames(T, composeFrames(P, fromRel)))
+  }, [baseFrames])
+  const movedRel = useCallback((T, fromRel) => movedRelOn(adjust.parent, T, fromRel), [movedRelOn, adjust])
+
+  // Sliders: turn, and left-right / down-up as seen on screen, all measured from `base` (where
+  // the map was when the sliders were last at zero). Dragging, matching or Reset re-zero them.
+  const SLIDERS_ZERO = { turnDeg: 0, right: 0, up: 0 }
+  const withSliders = (a, patch) => {
+    const n = { ...a, ...patch, score: null, matched: false }
+    const shift = {
+      turn: 0,
+      tx: n.rightDir.x * n.right + n.upDir.x * n.up,
+      ty: n.rightDir.y * n.right + n.upDir.y * n.up,
+    }
+    n.rel = movedRelOn(n.parent, composeFrames(shift, turnAbout(n.turnDeg, n.pivot)), n.base)
+    return n
+  }
+  const startAdjust = useCallback((m) => {
+    const parent = baseFrames?.get(m)?.parent
+    const f = parent && mapToMap(pinsRef.current, m, parent, alignments)
+    if (!f) return
+    const info = byName.get(combinedBase)
+    const view = views[combinedBase] ?? BLANK_VIEW
+    const at = (x, y) => screenToWorld(x, y, info, view)
+    const o = at(0, 0)
+    const unit = (p, sign) => {
+      const d = { x: (p.x - o.x) * sign, y: (p.y - o.y) * sign }
+      const len = Math.hypot(d.x, d.y) || 1
+      return { x: d.x / len, y: d.y / len }
+    }
+    const rel = { turn: f.turn, tx: f.tx, ty: f.ty }
+    setAdjust({
+      map: m, parent, rel, base: rel, start: rel, ...SLIDERS_ZERO, score: null, matched: false,
+      pivot: viewCentre(), rightDir: unit(at(1, 0), 1), upDir: unit(at(0, 1), -1),
+    })
+  }, [baseFrames, alignments, byName, combinedBase, views]) // eslint-disable-line react-hooks/exhaustive-deps
+  const turnAbout = (deg, pivot) => {
+    const a = degToRad(deg)
+    const c = Math.cos(a)
+    const s = Math.sin(a)
+    return { turn: a, tx: pivot.x - (c * pivot.x - s * pivot.y), ty: pivot.y - (s * pivot.x + c * pivot.y) }
+  }
+  const viewCentre = () => {
+    const size = sizes[combinedBase] ?? { width: 0, height: 0 }
+    return screenToWorld(size.width / 2, size.height / 2, byName.get(combinedBase), views[combinedBase] ?? BLANK_VIEW)
+  }
+
+  const adjustDrag = useRef(null)
+  const adjustHandlers = adjust && combinedBase ? {
+    onPointerDown: (e) => {
+      e.currentTarget.setPointerCapture(e.pointerId)
+      const r = e.currentTarget.getBoundingClientRect()
+      const pt = { x: e.clientX - r.left, y: e.clientY - r.top }
+      const info = byName.get(combinedBase)
+      const view = views[combinedBase] ?? BLANK_VIEW
+      adjustDrag.current = { startRel: adjust.rel, start: screenToWorld(pt.x, pt.y, info, view), sx: pt.x, pivot: viewCentre(), info, view }
+    },
+    onPointerMove: (e) => {
+      const d = adjustDrag.current
+      if (!d) return
+      const r = e.currentTarget.getBoundingClientRect()
+      const pt = { x: e.clientX - r.left, y: e.clientY - r.top }
+      // Shift+drag turns (0.2° per pixel sideways); a plain drag moves.
+      const T = e.shiftKey
+        ? turnAbout((pt.x - d.sx) * 0.2, d.pivot)
+        : (() => { const w = screenToWorld(pt.x, pt.y, d.info, d.view); return { turn: 0, tx: w.x - d.start.x, ty: w.y - d.start.y } })()
+      setAdjust((a) => { if (!a) return a; const rel = movedRel(T, d.startRel); return { ...a, rel, base: rel, ...SLIDERS_ZERO, score: null, matched: false } })
+    },
+    onPointerUp: (e) => {
+      adjustDrag.current = null
+      if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+    },
+    onWheel: (e) => {
+      const r = e.currentTarget.getBoundingClientRect()
+      const mx = e.clientX - r.left
+      const my = e.clientY - r.top
+      const factor = Math.exp(-e.deltaY * 0.0015)
+      viewSetter(combinedBase)((v) => {
+        const next = Math.min(40, Math.max(0.05, v.scale * factor))
+        return { ...v, scale: next, x: mx - (mx - v.x) * (next / v.scale), y: my - (my - v.y) * (next / v.scale) }
+      })
+    },
+  } : null
+
+  const adjustImgs = adjust && {
+    to: { img: images.get(adjust.parent), info: byName.get(adjust.parent) },
+    from: { img: images.get(adjust.map), info: byName.get(adjust.map) },
+  }
+  const matchFromHere = () => {
+    const pair = switchPair(pinsRef.current, adjust.map, adjust.parent)
+    if (!pair || !adjustImgs.to.img || !adjustImgs.from.img) return
+    const r = matchMaps(adjustImgs.to, adjustImgs.from, pair.a, pair.b, adjust.rel, 8)
+    if (r) {
+      const rel = { turn: r.turn, tx: r.tx, ty: r.ty }
+      setAdjust((a) => a && { ...a, rel, base: rel, ...SLIDERS_ZERO, score: r.score, matched: true })
+    }
+    else setAdjust((a) => a && { ...a, score: 0, matched: false })
+  }
+  // -- save as one map --------------------------------------------------------
+  // The lined-up maps stitched into one and saved to the robot's map store, like the map
+  // editor saves a map. Mapping POIs come along, carried onto the base map's coordinates;
+  // only the base map's keep their photos (the store copies photos from one map only).
+  const [stitch, setStitch] = useState(null)
+  const openStitch = () => {
+    const base = byName.get(combinedBase)
+    setStitch({ name: `${entry.name}_stitched`.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 120), res: base?.resolution ?? 0.05, phase: 'edit', message: '' })
+  }
+  const stitchPreview = stitch && frames ? stitchSize(frames, byName, stitch.res) : null
+  const stitchTaken = stitch ? (maps ?? []).some((m) => m.name === stitch.name) : false
+  const saveStitch = async () => {
+    if (!frames || !stitch?.name) return
+    setStitch((st) => ({ ...st, phase: 'saving', message: 'Stitching…' }))
+    try {
+      const out = await stitchMaps(frames, images, byName, stitch.res)
+      const baseIds = new Set()
+      const pois = []
+      let nextId = 1
+      for (const p of pins) {
+        if (p.source !== 'mapping' || !frames.has(p.map)) continue
+        const id = Number(p.id.match(/^poi_(\d+)@/)?.[1])
+        if (p.map === combinedBase && Number.isInteger(id)) { baseIds.add(id); nextId = Math.max(nextId, id + 1) }
+      }
+      for (const p of pins) {
+        if (p.source !== 'mapping' || !frames.has(p.map)) continue
+        const own = Number(p.id.match(/^poi_(\d+)@/)?.[1])
+        const onBase = p.map === combinedBase && baseIds.has(own)
+        const w = applyFrame(frames.get(p.map), p)
+        pois.push({
+          id: onBase ? own : nextId++,
+          name: p.label,
+          x: w.x,
+          y: w.y,
+          yaw: (((p.yaw ?? 0) + frames.get(p.map).turn) * 180) / Math.PI,
+          timestamp: p.poi?.timestamp ?? '',
+          snapshots: onBase ? p.poi?.snapshots ?? [] : [],
+          description: p.poi?.description ?? '',
+        })
+      }
+      const form = new FormData()
+      form.append('png', out.blob, `${stitch.name}.png`)
+      form.append('meta', JSON.stringify({ resolution: out.resolution, origin: out.origin, pois, sourceName: combinedBase }))
+      const res = await fetch(`/api/maps2d/${encodeURIComponent(stitch.name)}`, { method: 'POST', body: form })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.error || `save failed (${res.status})`)
+      refresh()
+      setStitch((st) => ({
+        ...st, phase: 'done',
+        message: `${body.overwritten ? 'Replaced' : 'Saved'} ${stitch.name}: ${out.width}×${out.height} px, about ${Math.round(out.width * out.resolution)} × ${Math.round(out.height * out.resolution)} m. It is in the map list now.`,
+      }))
+    } catch (err) {
+      setStitch((st) => ({ ...st, phase: 'edit', message: `Not saved: ${err.message}` }))
+    }
+  }
+
+  const saveAdjust = () => {
+    const sc = adjustImgs.to.img && adjustImgs.from.img ? scoreFrame(adjustImgs.to, adjustImgs.from, adjust.rel) : null
+    const next = { ...alignments }
+    delete next[`${adjust.parent}|${adjust.map}`]
+    next[`${adjust.map}|${adjust.parent}`] = { ...adjust.rel, score: sc ?? 0, hand: !adjust.matched }
+    editGraph(() => ({ alignments: next }))
+    setAdjust(null)
+  }
+
+  // Lines every joined map up on the map it is joined to, by matching walls about their
+  // switch pair, and saves the result with the route. A weak match is not saved.
+  const [aligning, setAligning] = useState(null)
+  const lineUpByWalls = useCallback(() => {
+    if (!frames) return
+    const jobs = [...frames].filter(([m, f]) => m !== combinedBase && f.parent)
+    if (!jobs.length) return
+    setAligning({ running: true, results: {} })
+    // Lets "Matching walls…" paint before the search holds the page for a moment.
+    setTimeout(() => {
+      const next = { ...alignments }
+      const results = {}
+      for (const [m, f] of jobs) {
+        const to = f.parent
+        const pair = switchPair(pinsRef.current, m, to)
+        if (!pair || !images.get(m) || !images.get(to)) { results[m] = { error: 'not ready (map still loading?)' }; continue }
+        const byPins = mapToMap(pinsRef.current, m, to, {})
+        const r = matchMaps(
+          { img: images.get(to), info: byName.get(to) }, { img: images.get(m), info: byName.get(m) },
+          pair.a, pair.b, byPins?.source === 'pins' ? byPins : null,
+        )
+        if (!r) { results[m] = { error: 'too little shared area with walls to match' }; continue }
+        results[m] = { score: r.score }
+        if (r.score < 0.25) { results[m].weak = true; continue }
+        delete next[`${to}|${m}`]
+        next[`${m}|${to}`] = { turn: r.turn, tx: r.tx, ty: r.ty, score: r.score }
+      }
+      editGraph(() => ({ alignments: next }))
+      setAligning({ running: false, results })
+    }, 50)
+  }, [frames, combinedBase, alignments, images, byName, editGraph])
+
+  // Matched once by itself the first time the combined view opens on maps not yet matched.
+  const autoMatched = useRef(new Set())
+  useEffect(() => {
+    if (!frames || aligning?.running || adjust) return
+    const pending = [...frames].filter(([m, f]) => m !== combinedBase && f.source !== 'walls')
+    if (!pending.length || pending.some(([m, f]) => !images.get(m) || !images.get(f.parent))) return
+    const key = `${entry?.id}|${combinedBase}|${pending.map(([m]) => m).join(',')}`
+    if (autoMatched.current.has(key)) return
+    autoMatched.current.add(key)
+    lineUpByWalls()
+  }, [frames, combinedBase, images, aligning, adjust, entry?.id, lineUpByWalls])
+  const combinedPins = useMemo(() => {
+    if (!frames) return NONE
+    const out = []
+    for (const [m, f] of frames) {
+      for (const p of named) {
+        if (p.map !== m) continue
+        out.push({
+          ...p,
+          ...applyFrame(f, p),
+          yaw: (p.yaw ?? 0) + f.turn,
+          ...(p.type === 'map_switch' && !partners.has(p.id) && { unpaired: true }),
+        })
+      }
+    }
+    return out
+  }, [frames, named, partners])
+  const combinedLinks = useMemo(() => (frames ? linksFromKeys(combinedPins, links, null, null) : NONE),
+    [frames, combinedPins, links])
+  const notJoined = frames ? graphMaps.filter((m) => !frames.has(m)) : NONE
+  const combinedMismatch = frames ? Math.max(0, ...[...frames.values()].map((f) => f.mismatchM)) : 0
+  const colorOf = (m) => combinedColor(graphMaps, m)
+
+  const drawCombined = (ctx, toScreen) => {
+    drawMapsOnto(ctx, toScreen, frames, combinedBase, images, byName, colorOf)
+    drawGraphLayer(ctx, toScreen, { points: combinedPins, links: combinedLinks, selectedKey: null, pending: null, plan: null, accent })
+  }
 
   const [sliding, setSliding] = useState(false)
   const slideTimer = useRef(null)
@@ -829,13 +1094,20 @@ export function PathEditorPage() {
   const turnInfoFor = (pin) => {
     const o = partners.get(pin.id)
     if (!o) return null
+    const walls = savedFrame(alignments, pin.map, o.map)
+    const score = alignments[`${pin.map}|${o.map}`]?.score ?? alignments[`${o.map}|${pin.map}`]?.score
+    if (walls) {
+      return { from: pin.map, to: o.map, fromWalls: true, score, fromPins: true, pairs: 1,
+        turnDeg: toDeg(walls.turn), mismatchM: 0,
+        linedUp: Math.abs(toDeg(walls.turn - mapTurner([], rotations)(pin.map, o.map))) <= 1 }
+    }
     const t = pinTurn(pins, pin.map, o.map)
     return {
       from: pin.map,
       to: o.map,
       fromPins: Boolean(t),
       pairs: t?.pairs ?? 1,
-      turnDeg: toDeg(t ? t.turn : mapTurner(pins, rotations)(pin.map, o.map)),
+      turnDeg: toDeg(t ? t.turn : mapTurner(pins, rotations, alignments)(pin.map, o.map)),
       mismatchM: t?.mismatchM ?? 0,
       // Already lined up when the ↻ angles agree with the pins to within a degree.
       linedUp: t ? Math.abs(toDeg(t.turn - mapTurner([], rotations)(pin.map, o.map))) <= 1 : true,
@@ -951,8 +1223,8 @@ export function PathEditorPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderBottom: '1px solid var(--border)', flexWrap: 'wrap', position: 'relative' }}>
           <button
             className="btn-icon"
-            style={{ fontSize: 11, padding: '4px 10px', ...(!focusMap && { borderColor: 'var(--accent-bright)', color: 'var(--text-h)' }) }}
-            onClick={() => { setFocusMap(null); clearTools() }}
+            style={{ fontSize: 11, padding: '4px 10px', ...(!focusMap && !combinedBase && { borderColor: 'var(--accent-bright)', color: 'var(--text-h)' }) }}
+            onClick={() => { setCombinedOn(null); setFocusMap(null); clearTools() }}
             disabled={graphMaps.length < 2}
             title="Show every map of the route side by side"
           >
@@ -992,6 +1264,16 @@ export function PathEditorPage() {
           >
             ＋ Add map
           </button>
+          {graphMaps.length > 1 && (
+            <button
+              className="btn-icon"
+              style={{ fontSize: 11, padding: '4px 10px', ...(combinedBase && { borderColor: 'var(--accent-bright)', color: 'var(--text-h)', background: 'color-mix(in srgb, var(--accent-bright) 18%, transparent)' }) }}
+              onClick={() => { clearTools(); setCombinedOn(combinedBase ? null : (focusMap ?? graphMaps[0])) }}
+              title="Lay the maps on top of each other, joined by their Map Switch pairs, to check they line up"
+            >
+              ⧉ Combined
+            </button>
+          )}
           <span style={{ flex: 1 }} />
           <button
             className="btn-icon"
@@ -1048,7 +1330,7 @@ export function PathEditorPage() {
             <div
               ref={gridRef}
               style={{
-                position: 'absolute', inset: 0, display: 'grid', gap: 6, padding: focusMap ? 0 : 6,
+                position: 'absolute', inset: 0, display: 'grid', gap: 6, padding: focusMap || combinedBase ? 0 : 6,
                 gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
                 gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
               }}
@@ -1070,10 +1352,10 @@ export function PathEditorPage() {
                 return (
                   <div
                     key={m}
-                    className={focusMap ? undefined : 'panel'}
+                    className={focusMap || combinedBase ? undefined : 'panel'}
                     style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'hidden' }}
                   >
-                    {!focusMap && (
+                    {!focusMap && !combinedBase && (
                       <div
                         className="panel-header"
                         onClick={() => expand(m)}
@@ -1095,21 +1377,21 @@ export function PathEditorPage() {
                         <C2MapCanvas
                           info={info}
                           image={images.get(m) ?? null}
-                          pins={mapPins}
+                          pins={combinedBase ? combinedPins : mapPins}
                           selectedId={selectedId}
-                          placingType={editable ? placingType : null}
-                          editable={editable}
+                          placingType={editable && !combinedBase ? placingType : null}
+                          editable={editable && !combinedBase}
                           view={views[m] ?? BLANK_VIEW}
                           robot={null}
                           onViewChange={viewSetter(m)}
                           onPlace={(type, world) => addPin(m, type, world)}
-                          onSelect={selectPoint}
+                          onSelect={combinedBase ? setSelectedId : selectPoint}
                           onMovePin={movePin}
                           onSetYaw={setYaw}
                           onRename={editable ? beginRename : undefined}
                           onHover={(w) => setHover(w ? { ...w, map: m } : null)}
                           onSizeChange={sizeSetter(m)}
-                          drawUnder={drawUnder}
+                          drawUnder={combinedBase ? drawCombined : drawUnder}
                           onEmptyClick={(pt) => handleEmptyClick(m, pt)}
                           showNames={showNames}
                         />
@@ -1118,7 +1400,7 @@ export function PathEditorPage() {
                           {maps === null ? 'Reading the map store…' : `${m} is not in the robot's map store.`}
                         </div>
                       )}
-                      {info && tileOverlays(m)}
+                      {info && !combinedBase && tileOverlays(m)}
                       {info && !images.get(m) && (
                         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 12, pointerEvents: 'none' }}>
                           Loading {m}…
@@ -1141,6 +1423,223 @@ export function PathEditorPage() {
                 </g>
               ))}
             </svg>
+          )}
+
+          {adjustHandlers && (
+            <div
+              {...adjustHandlers}
+              style={{ position: 'absolute', inset: 0, zIndex: 3, cursor: 'move', touchAction: 'none' }}
+              title="Drag to move · Shift+drag to turn · wheel to zoom"
+            />
+          )}
+          {combinedBase && byName.get(combinedBase) && (
+            <>
+              <div
+                className="panel"
+                style={{
+                  position: 'absolute', top: 10, left: 10, zIndex: 6, padding: '8px 10px', maxWidth: 'min(420px, calc(100% - 20px))',
+                  display: 'flex', flexDirection: 'column', gap: 6, fontSize: 11, boxShadow: '0 6px 18px rgba(0,0,0,0.35)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="val-mono" style={{ color: 'var(--text-h)' }}>⧉ REFERENCE</span>
+                  <select
+                    value={combinedBase}
+                    onChange={(e) => setCombinedOn(e.target.value)}
+                    className="val-mono"
+                    style={{ fontSize: 11, background: 'var(--bg)', color: 'var(--text-h)', border: '1px solid var(--border)', borderRadius: 4, padding: '2px 4px', minWidth: 0 }}
+                  >
+                    {graphMaps.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                  <RotateControl deg={rotations[combinedBase] ?? 0} onChange={(d) => setRotation(combinedBase, d)} />
+                </div>
+                <div className="val-mono" style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {graphMaps.filter((m) => frames?.has(m)).map((m) => (
+                    <span key={m} style={{ display: 'flex', alignItems: 'center', gap: 6, wordBreak: 'break-all' }}>
+                      <span style={{ width: 14, height: 3, flexShrink: 0, background: m === combinedBase ? 'var(--text-h)' : colorOf(m) }} />
+                      <span style={{ minWidth: 0 }}>
+                        {m}{m === combinedBase ? ' (base, black walls)' : ''}
+                        {m !== combinedBase && (() => {
+                          const src = frames.get(m)?.source
+                          const res = aligning?.results?.[m]
+                          if (aligning?.running) return <span style={{ color: '#60A5FA' }}> · matching walls…</span>
+                          if (res?.error) return <span style={{ color: '#FBBF24' }}> · couldn't match: {res.error}</span>
+                          if (res?.weak) return <span style={{ color: '#FBBF24' }}> · weak match ({Math.round(res.score * 100)}%), not used</span>
+                          if (adjust?.map === m) return <span style={{ color: '#60A5FA' }}> · placing by hand</span>
+                          if (src === 'walls') {
+                            const saved = alignments[`${m}|${frames.get(m).parent}`] ?? alignments[`${frames.get(m).parent}|${m}`]
+                            const pct = saved?.score != null ? ` ${Math.round(saved.score * 100)}%` : ''
+                            return saved?.hand
+                              ? <span style={{ color: '#4ADE80' }}> · ✋ placed by hand{pct}</span>
+                              : <span style={{ color: '#4ADE80' }}> · ✓ walls matched{pct}</span>
+                          }
+                          return <span style={{ color: 'var(--text-dim)' }}> · rough, from the switch pins</span>
+                        })()}
+                      </span>
+                      {m !== combinedBase && !adjust && !aligning?.running && (
+                        <button
+                          className="btn-icon"
+                          style={{ fontSize: 10, padding: '1px 8px', marginLeft: 'auto', flexShrink: 0 }}
+                          onClick={() => startAdjust(m)}
+                          title="Move and turn this map by hand until the walls sit on top of each other"
+                        >
+                          ✋ Adjust
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+                <span style={{ color: 'var(--text-dim)', lineHeight: 1.4 }}>
+                  C2 lines the maps up by matching their walls. Walls should sit on top of each other.
+                </span>
+
+                {adjust && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8, borderRadius: 4, border: '1px solid #60A5FA' }}>
+                    <span style={{ color: 'var(--text-h)', lineHeight: 1.4 }}>
+                      ✋ Placing <b>{adjust.map}</b>: use the sliders, or drag the map (Shift+drag turns it).
+                    </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <label style={{ display: 'grid', gridTemplateColumns: '78px 1fr 52px', alignItems: 'center', gap: 6 }}>
+                        <span style={{ color: 'var(--text-dim)' }}>Turn</span>
+                        <input
+                          type="range" min={-20} max={20} step={0.1} value={adjust.turnDeg}
+                          onChange={(e) => { const v = Number(e.target.value); setAdjust((a) => a && withSliders(a, { turnDeg: v })) }}
+                        />
+                        <span className="val-mono" style={{ textAlign: 'right', color: 'var(--text-h)' }}>{(adjust.turnDeg > 0 ? '+' : '') + adjust.turnDeg.toFixed(1)}°</span>
+                      </label>
+                      <label style={{ display: 'grid', gridTemplateColumns: '78px 1fr 52px', alignItems: 'center', gap: 6 }}>
+                        <span style={{ color: 'var(--text-dim)' }}>Left ↔ Right</span>
+                        <input
+                          type="range" min={-3} max={3} step={0.01} value={adjust.right}
+                          onChange={(e) => { const v = Number(e.target.value); setAdjust((a) => a && withSliders(a, { right: v })) }}
+                        />
+                        <span className="val-mono" style={{ textAlign: 'right', color: 'var(--text-h)' }}>{(adjust.right > 0 ? '+' : '') + adjust.right.toFixed(2)} m</span>
+                      </label>
+                      <label style={{ display: 'grid', gridTemplateColumns: '78px 1fr 52px', alignItems: 'center', gap: 6 }}>
+                        <span style={{ color: 'var(--text-dim)' }}>Down ↕ Up</span>
+                        <input
+                          type="range" min={-3} max={3} step={0.01} value={adjust.up}
+                          onChange={(e) => { const v = Number(e.target.value); setAdjust((a) => a && withSliders(a, { up: v })) }}
+                        />
+                        <span className="val-mono" style={{ textAlign: 'right', color: 'var(--text-h)' }}>{(adjust.up > 0 ? '+' : '') + adjust.up.toFixed(2)} m</span>
+                      </label>
+                    </div>
+                    <button
+                      className="btn-icon"
+                      style={{ fontSize: 11, padding: '2px 8px', alignSelf: 'flex-start' }}
+                      onClick={() => setAdjust((a) => a && { ...a, rel: a.start, base: a.start, ...SLIDERS_ZERO, score: null, matched: false })}
+                      title="Back to where it was when you pressed Adjust"
+                    >
+                      ↺ Reset
+                    </button>
+                    {adjust.score != null && (
+                      <span style={{ color: adjust.score >= 0.25 ? '#4ADE80' : '#FBBF24' }}>
+                        {adjust.score > 0 ? `Walls matching: ${Math.round(adjust.score * 100)}%` : "Couldn't match from here."}
+                      </span>
+                    )}
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <button className="btn-icon" style={{ fontSize: 11, padding: '4px 10px' }} onClick={matchFromHere} title="Let C2 fine-tune from where you have put it">
+                        ⟳ Match walls from here
+                      </button>
+                      <button className="btn-icon" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => setAdjust(null)}>Cancel</button>
+                      <button className="btn-icon" style={{ fontSize: 11, padding: '4px 10px', borderColor: 'var(--accent-bright)', color: 'var(--text-h)' }} onClick={saveAdjust}>
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {frames && frames.size > 1 && !adjust && !stitch && (
+                  <button
+                    className="btn-icon"
+                    style={{ fontSize: 11, padding: '4px 10px', alignSelf: 'flex-start' }}
+                    disabled={aligning?.running}
+                    onClick={openStitch}
+                    title="Stitch the lined-up maps into one map and save it to the robot's map store"
+                  >
+                    💾 Save as one map
+                  </button>
+                )}
+                {stitch && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8, borderRadius: 4, border: '1px solid var(--accent-bright)' }}>
+                    <span style={{ color: 'var(--text-h)' }}>💾 Save the {frames?.size ?? 0} lined-up maps as one map</span>
+                    <input
+                      value={stitch.name}
+                      onChange={(e) => setStitch((st) => ({ ...st, name: e.target.value.replace(/[^A-Za-z0-9_]/g, ''), phase: 'edit', message: '' }))}
+                      className="val-mono"
+                      placeholder="map_name"
+                      style={{ fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text-h)' }}
+                    />
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      Detail
+                      <select
+                        value={stitch.res}
+                        onChange={(e) => setStitch((st) => ({ ...st, res: Number(e.target.value), phase: 'edit', message: '' }))}
+                        style={{ fontSize: 11, background: 'var(--bg)', color: 'var(--text-h)', border: '1px solid var(--border)', borderRadius: 4 }}
+                      >
+                        {[...new Set([byName.get(combinedBase)?.resolution, 0.05, 0.1].filter(Boolean))].map((r) => (
+                          <option key={r} value={r}>{(r * 100).toFixed(0)} cm per pixel{r === byName.get(combinedBase)?.resolution ? ' (same as the maps)' : r === 0.05 ? ' (Nav2 usual, lighter)' : ' (lightest)'}</option>
+                        ))}
+                      </select>
+                    </label>
+                    {stitchPreview && (
+                      <span style={{ color: stitchPreview.width * stitchPreview.height > MAX_STITCH_PIXELS ? '#F87171' : 'var(--text-dim)' }}>
+                        {stitchPreview.width}×{stitchPreview.height} px, about {Math.round(stitchPreview.width * stitch.res)} × {Math.round(stitchPreview.height * stitch.res)} m
+                        {stitchPreview.width * stitchPreview.height > MAX_STITCH_PIXELS && ' — too big at this detail, pick a lighter one'}
+                      </span>
+                    )}
+                    {notJoined.length > 0 && <span style={{ color: '#FBBF24' }}>Left out (not lined up): {notJoined.join(', ')}</span>}
+                    {stitchTaken && stitch.phase !== 'done' && <span style={{ color: '#FBBF24' }}>A map named {stitch.name} exists: saving replaces it.</span>}
+                    {stitch.message && (
+                      <span style={{ color: stitch.phase === 'done' ? '#4ADE80' : stitch.phase === 'saving' ? '#60A5FA' : '#F87171' }}>{stitch.message}</span>
+                    )}
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn-icon" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => setStitch(null)}>
+                        {stitch.phase === 'done' ? 'Close' : 'Cancel'}
+                      </button>
+                      {stitch.phase !== 'done' && (
+                        <button
+                          className="btn-icon"
+                          style={{ fontSize: 11, padding: '4px 10px', borderColor: 'var(--accent-bright)', color: 'var(--text-h)' }}
+                          disabled={!stitch.name || stitch.phase === 'saving' || !stitchPreview || stitchPreview.width * stitchPreview.height > MAX_STITCH_PIXELS}
+                          onClick={saveStitch}
+                        >
+                          {stitch.phase === 'saving' ? 'Saving…' : stitchTaken ? `Replace ${stitch.name}` : 'Save'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {frames && frames.size > 1 && !adjust && (
+                  <button
+                    className="btn-icon"
+                    style={{ fontSize: 11, padding: '4px 10px', alignSelf: 'flex-start' }}
+                    disabled={aligning?.running}
+                    onClick={lineUpByWalls}
+                    title="Match the walls again, e.g. after moving a Map Switch"
+                  >
+                    {aligning?.running ? 'Matching walls…' : '⟳ Match walls again'}
+                  </button>
+                )}
+                {combinedMismatch > 0.2 && [...(frames?.values() ?? [])].some((f) => f.source === 'pins') && (
+                  <span style={{ color: '#FBBF24' }}>
+                    ⚠ Switches disagree by up to {combinedMismatch.toFixed(2)} m.
+                  </span>
+                )}
+                {notJoined.length > 0 && (
+                  <span style={{ color: '#FBBF24', wordBreak: 'break-all' }}>
+                    Not joined yet: {notJoined.join(', ')}. Link a Map Switch pair to it, at a spot both maps share, to show it here.
+                  </span>
+                )}
+              </div>
+              <div style={{ position: 'absolute', right: 10, bottom: 10, zIndex: 4 }}>
+                <ZoomControls
+                  zoom={(views[combinedBase] ?? BLANK_VIEW).scale}
+                  onZoomIn={() => viewSetter(combinedBase)((v) => zoomAbout(v, sizes[combinedBase], ZOOM_STEP))}
+                  onZoomOut={() => viewSetter(combinedBase)((v) => zoomAbout(v, sizes[combinedBase], 1 / ZOOM_STEP))}
+                  onFit={() => viewSetter(combinedBase)(fitView(byName.get(combinedBase), sizes[combinedBase] ?? { width: 0, height: 0 }, 0.94, degToRad(rotations[combinedBase])))}
+                />
+              </div>
+            </>
           )}
 
           {focusMap && byName.get(focusMap) && (

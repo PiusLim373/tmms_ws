@@ -75,7 +75,14 @@ export function C2PinPopover({
               pin, then relocalizes on that one. The two share one heading: turn either and the
               other follows.
             </div>
-            {turnInfo && (turnInfo.fromPins ? (
+            {turnInfo?.fromWalls && (
+              <div style={{ color: '#4ADE80', fontSize: 11, ...WRAP }}>
+                ✓ These maps are lined up by matching their walls
+                {turnInfo.score != null ? ` (${Math.round(turnInfo.score * 100)}% match)` : ''}: {turnInfo.to} is
+                turned {turnInfo.turnDeg}° from {turnInfo.from}.
+              </div>
+            )}
+            {turnInfo && !turnInfo.fromWalls && (turnInfo.fromPins ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 11 }}>
                 <div style={{ color: '#4ADE80', ...WRAP }}>
                   ✓ How these two maps are turned is worked out from {turnInfo.pairs} linked pairs:

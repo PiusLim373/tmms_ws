@@ -23,6 +23,7 @@ export function saveGraph(graph, { keepalive = false } = {}) {
       maps: graph.maps,
       rotations: graph.rotations ?? {},
       hiddenPois: graph.hiddenPois ?? [],
+      alignments: graph.alignments ?? {},
       pins: graph.pins,
       links: graph.links ?? [],
     }),

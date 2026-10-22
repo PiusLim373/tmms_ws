@@ -16,8 +16,8 @@ import { centreOn, degToRad, fitView, quaternionToYaw, worldToPixel, worldToScre
 import {
   PIN_META, POSE_ID, POSE_TYPE, carryAcross, displayName, displayNumber, stopsToWaypoints, withMapPoints,
 } from '../lib/c2Pins'
-import { clearanceAt, linksFromKeys, mapTurner, partnerOf, planRoute } from '../lib/c2Graph'
-import { drawGraphLayer } from '../lib/c2GraphDraw'
+import { applyFrame, clearanceAt, framesOnto, linksFromKeys, mapFramer, mapTurner, partnerOf, planRoute } from '../lib/c2Graph'
+import { combinedColor, drawGraphLayer, drawMapsOnto } from '../lib/c2GraphDraw'
 import { subscribeNavPlan } from '../lib/c2NavPath'
 import { cancelNavGoal, setQuadrupedPaused, subscribe } from '../services/rosbridge'
 import { nextNavplanId, relocalize, sendNavplan, subscribeLaserScan } from '../navplan_tester/lib/navplanRos'
@@ -245,12 +245,21 @@ export function C2Page({ heldKeys, isPaused }) {
   useEffect(() => {
     if (follow && robotInGraph) setViewMap(robotMap)
   }, [follow, robotInGraph, robotMap])
+  // Combined: every map lined up on one base map (the robot's, by default), as in the
+  // Path Editor. View only.
+  const [combined, setCombined] = useState(false)
+  const [combinedOn, setCombinedOn] = useState(null)
+  const combinedBase = combined
+    ? (graphMaps.includes(combinedOn) ? combinedOn : robotInGraph ? robotMap : graphMaps[0] ?? null)
+    : null
   const showMap = useCallback((m) => {
+    setCombined(false)
     setAllMaps(false)
     setViewMap(m)
     if (m !== robotMap) setFollow(false)
   }, [robotMap])
-  const tiles = useMemo(() => (allMaps ? graphMaps : shownMap ? [shownMap] : NONE), [allMaps, graphMaps, shownMap])
+  const tiles = useMemo(() => (combinedBase ? [combinedBase] : allMaps ? graphMaps : shownMap ? [shownMap] : NONE),
+    [combinedBase, allMaps, graphMaps, shownMap])
   const info = shownMap ? byName.get(shownMap) ?? null : null
   const robotOnThisMap = Boolean(robotMap && shownMap === robotMap)
   // How the Path Editor turned each map on screen; display only.
@@ -431,7 +440,9 @@ export function C2Page({ heldKeys, isPaused }) {
       setWalking(null)
       if (switchFailed) {
         setResult({ ok: false, message: `Map switch did not localize. Recovering automatically…` })
-        const carried = switchFrom.current ? carryAcross(switchFrom.current, walking.stops, mapTurner(pins, graph?.rotations)) : null
+        const carried = switchFrom.current
+          ? carryAcross(switchFrom.current, walking.stops, mapTurner(pins, graph?.rotations, graph?.alignments), mapFramer(graph?.alignments))
+          : null
         // What is left of the route the operator sent: everything after the switch it was
         // crossing. Recovery sends exactly this once localized, never a new plan.
         const rest = restAfterSwitch(walking.stops, switchFrom.current, robotMap)
@@ -497,7 +508,7 @@ export function C2Page({ heldKeys, isPaused }) {
         return
       }
       const navplanId = nextNavplanId()
-      sendNavplan({ navplanId, waypoints: stopsToWaypoints(stops, mapTurner(ps, g?.rotations)) },
+      sendNavplan({ navplanId, waypoints: stopsToWaypoints(stops, mapTurner(ps, g?.rotations, g?.alignments), mapFramer(g?.alignments)) },
         (res) => {
           if (!res.success) { fail(`Localized again, but the robot refused the route: ${res.message}`); return }
           setRecovery(null)
@@ -556,7 +567,7 @@ export function C2Page({ heldKeys, isPaused }) {
     const navplanId = nextNavplanId()
     setConfirm({
       navplanId,
-      waypoints: stopsToWaypoints(activePlan.stops, mapTurner(pins, graph?.rotations)),
+      waypoints: stopsToWaypoints(activePlan.stops, mapTurner(pins, graph?.rotations, graph?.alignments), mapFramer(graph?.alignments)),
       sent: {
         id: navplanId, targetId: target?.id, name: target?.name, mode: routeMode, stops: activePlan.stops,
         robotLeg: activePlan.robotLeg, robotMap, legs: activePlan.legs, reached: 0,
@@ -661,6 +672,55 @@ export function C2Page({ heldKeys, isPaused }) {
     const route = activePlan?.stops ?? walking?.stops ?? []
     route.forEach((p, i) => {
       if (p.map === m && (p.type === 'simple' || p.type === 'home')) drawStepBadge(ctx, toScreen(p.x, p.y), `#${i + 1}`)
+    })
+  }
+
+  // -- combined view: everything carried onto the base map ------------------
+  const frames = useMemo(() => (combinedBase ? framesOnto(pins, combinedBase, graphMaps, graph?.alignments ?? {}) : null),
+    [combinedBase, pins, graphMaps, graph?.alignments])
+  const toBase = useCallback((p, map = p.map) => {
+    const f = frames?.get(map)
+    if (!f) return null
+    return { ...p, ...applyFrame(f, p), yaw: (p.yaw ?? 0) + f.turn }
+  }, [frames])
+  const combinedPins = useMemo(() => (frames
+    ? [...frames.keys()].flatMap((m) => (pinsByMap.get(m) ?? NONE).map((p) => toBase(p)))
+    : NONE), [frames, pinsByMap, toBase])
+  const combinedLinks = useMemo(() => (frames ? linksFromKeys(combinedPins, links, null, null) : NONE),
+    [frames, combinedPins, links])
+  const robotCombined = useMemo(() => {
+    if (!frames || !robot?.position || !robotMap || !frames.has(robotMap)) return null
+    const f = frames.get(robotMap)
+    return { ...robot, position: applyFrame(f, robot.position), yaw: (robot.yaw ?? 0) + f.turn }
+  }, [frames, robot, robotMap])
+  const notJoined = frames ? graphMaps.filter((m) => !frames.has(m)) : NONE
+
+  const drawCombined = (ctx, toScreen) => {
+    drawMapsOnto(ctx, toScreen, frames, combinedBase, images, byName, (m) => combinedColor(graphMaps, m))
+    const leg = (pts, map) => pts?.map((q) => toBase(q, q.map ?? map)).filter(Boolean)
+    const legs = (list) => list.map((l) => leg(l)).filter((l) => l.length > 1)
+    drawGraphLayer(ctx, toScreen, {
+      points: combinedPins,
+      links: combinedLinks,
+      selectedKey: null,
+      pending: null,
+      plan: activePlan
+        ? { robotLeg: leg(activePlan.robotLeg, robotMap), legs: legs(activePlan.legs) }
+        : walking
+          ? walking.mode === 'to'
+            ? { robotLeg: null, legs: navPath?.length > 1 ? [leg(navPath, robotMap)] : [], dashed: true }
+            : {
+              robotLeg: walking.reached > 0 ? null : leg(walking.robotLeg, walking.robotMap),
+              legs: legs(walking.legs),
+              doneFlags: walking.legs.map((l) => walking.stops.indexOf(l[1]) < walking.reached),
+            }
+          : null,
+      accent,
+    })
+    const route = activePlan?.stops ?? walking?.stops ?? []
+    route.forEach((p, i) => {
+      const q = (p.type === 'simple' || p.type === 'home') && toBase(p)
+      if (q) drawStepBadge(ctx, toScreen(q.x, q.y), `#${i + 1}`)
     })
   }
 
@@ -1116,15 +1176,39 @@ export function C2Page({ heldKeys, isPaused }) {
           {graphMaps.length > 1 && (
             <button
               className="btn-icon"
-              onClick={() => setAllMaps(true)}
+              onClick={() => { setCombined(false); setAllMaps(true) }}
               style={{
                 fontSize: 11, padding: '4px 10px',
-                ...(allMaps && { borderColor: 'var(--accent-bright)', color: 'var(--text-h)', background: 'color-mix(in srgb, var(--accent-bright) 18%, transparent)' }),
+                ...(allMaps && !combined && { borderColor: 'var(--accent-bright)', color: 'var(--text-h)', background: 'color-mix(in srgb, var(--accent-bright) 18%, transparent)' }),
               }}
               title="Every map of the route side by side"
             >
               ▦ All maps ({graphMaps.length})
             </button>
+          )}
+          {graphMaps.length > 1 && (
+            <button
+              className="btn-icon"
+              onClick={() => { setAllMaps(false); setCombined(true) }}
+              style={{
+                fontSize: 11, padding: '4px 10px',
+                ...(combined && { borderColor: 'var(--accent-bright)', color: 'var(--text-h)', background: 'color-mix(in srgb, var(--accent-bright) 18%, transparent)' }),
+              }}
+              title="All the maps lined up on one picture, as in the Path Editor"
+            >
+              ⧉ Combined
+            </button>
+          )}
+          {combined && (
+            <select
+              value={combinedBase ?? ''}
+              onChange={(e) => setCombinedOn(e.target.value)}
+              className="val-mono"
+              title="The map the others are laid onto"
+              style={{ fontSize: 11, background: 'var(--bg)', color: 'var(--text-h)', border: '1px solid var(--border)', borderRadius: 4, padding: '3px 4px' }}
+            >
+              {graphMaps.map((m) => <option key={m} value={m}>on {m}{m === robotMap ? ' (robot)' : ''}</option>)}
+            </select>
           )}
           {graphMaps.map((m) => (
             <button
@@ -1133,7 +1217,7 @@ export function C2Page({ heldKeys, isPaused }) {
               onClick={() => showMap(m)}
               style={{
                 fontSize: 11, padding: '4px 10px', display: 'inline-flex', alignItems: 'center', gap: 6,
-                ...(!allMaps && m === shownMap && { borderColor: 'var(--accent-bright)', color: 'var(--text-h)', background: 'color-mix(in srgb, var(--accent-bright) 18%, transparent)' }),
+                ...(!allMaps && !combined && m === shownMap && { borderColor: 'var(--accent-bright)', color: 'var(--text-h)', background: 'color-mix(in srgb, var(--accent-bright) 18%, transparent)' }),
               }}
             >
               <span style={{ width: 7, height: 7, borderRadius: '50%', background: m === robotMap ? TONE.ok : 'var(--border)' }} />
@@ -1142,7 +1226,7 @@ export function C2Page({ heldKeys, isPaused }) {
             </button>
           ))}
           <span style={{ flex: 1 }} />
-          {graphMaps.length > 1 && !allMaps && (
+          {graphMaps.length > 1 && !allMaps && !combined && (
             <label className="val-mono" style={{ fontSize: 10, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
               <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
               follow robot
@@ -1167,8 +1251,8 @@ export function C2Page({ heldKeys, isPaused }) {
           >
             {tiles.map((m) => {
               const mi = byName.get(m)
-              const robotHere = robotMap === m ? robot : null
-              const tilePins = pinsByMap.get(m) ?? NONE
+              const robotHere = combinedBase ? robotCombined : robotMap === m ? robot : null
+              const tilePins = combinedBase ? combinedPins : pinsByMap.get(m) ?? NONE
               return (
                 <div key={m} className={allMaps ? 'panel' : undefined} style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
                   {allMaps && (
@@ -1204,7 +1288,7 @@ export function C2Page({ heldKeys, isPaused }) {
                           onSetYaw={(id, yaw) => { if (id === POSE_ID) setPosePin((p) => (p ? { ...p, yaw: yaw ?? 0, headingSet: yaw != null } : p)) }}
                           onHover={(w) => setHover(w ? { ...w, map: m } : null)}
                           onSizeChange={sizeSetter(m)}
-                          drawUnder={drawUnderFor(m)}
+                          drawUnder={combinedBase ? drawCombined : drawUnderFor(m)}
                         />
                         <MapOverlay
                           info={mi}
@@ -1301,7 +1385,20 @@ export function C2Page({ heldKeys, isPaused }) {
                   ⚠ LIDAR · {lidarHint}
                 </div>
               )}
-              {!allMaps && robotMap && !robotOnThisMap && (
+              {combinedBase && (
+                <div className="val-mono" style={{ alignSelf: 'flex-start', padding: '4px 8px', borderRadius: 4, fontSize: 10, background: 'var(--panel-bg)', border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {graphMaps.filter((m) => frames?.has(m)).map((m) => (
+                    <span key={m} style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text)' }}>
+                      <span style={{ width: 12, height: 3, background: m === combinedBase ? 'var(--text-h)' : combinedColor(graphMaps, m) }} />
+                      {m}{m === robotMap ? ' · robot' : ''}
+                    </span>
+                  ))}
+                  {notJoined.length > 0 && (
+                    <span style={{ color: TONE.warn }}>Not lined up yet: {notJoined.join(', ')} (Path Editor → ⧉ Combined)</span>
+                  )}
+                </div>
+              )}
+              {!allMaps && !combined && robotMap && !robotOnThisMap && (
                 <div className="val-mono" style={{ alignSelf: 'flex-start', padding: '4px 10px', borderRadius: 4, border: `1px solid ${TONE.warn}`, background: 'var(--panel-bg)', color: TONE.warn, fontSize: 11 }}>
                   Robot is on {robotMap}{robotInGraph ? '' : ' (not in this route)'}
                 </div>
